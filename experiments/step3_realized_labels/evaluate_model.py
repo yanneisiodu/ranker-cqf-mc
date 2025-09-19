@@ -1,0 +1,200 @@
+import pandas as pd
+import numpy as np
+import joblib
+import logging
+import os
+import time
+import argparse
+from sklearn.metrics import ndcg_score
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from utils import load_config, preprocess_data, get_group_info, make_daily_rank_labels
+from logger import setup_logger
+
+# --- Configuration & Constants ---
+logger = setup_logger(__name__, level=logging.INFO)
+
+# TARGET_LOOKAHEAD_DAYS removed - horizon now comes from config.label_horizon_days
+K_VALUES = [1, 5, 10, 20] # K values for metric calculation
+
+# --- Helper Functions for Metrics ---
+def calculate_precision_at_k(y_true_group, y_pred_group_scores, k):
+    """Calculates Precision@k for a single group."""
+    if k == 0:
+        return 0.0
+    y_true_arr = np.asarray(y_true_group)
+    top_k_indices = np.argsort(y_pred_group_scores)[::-1][:k]
+    top_k_true_relevance = y_true_arr[top_k_indices]
+    num_relevant_in_top_k = np.sum(top_k_true_relevance > 0) # Assuming relevance > 0 means relevant
+    return num_relevant_in_top_k / k
+
+def calculate_average_precision_at_k(y_true_group, y_pred_group_scores, k):
+    """Calculates Average Precision@k (AP@k) for a single group."""
+    if k == 0:
+        return 0.0
+    
+    y_true_arr = np.asarray(y_true_group)
+    sorted_indices = np.argsort(y_pred_group_scores)[::-1]
+    
+    ap_sum = 0.0
+    relevant_hits = 0
+    num_items_to_consider = min(k, len(y_true_arr))
+
+    for i in range(num_items_to_consider):
+        idx = sorted_indices[i]
+        if y_true_arr[idx] > 0: # Item at rank i+1 is relevant
+            relevant_hits += 1
+            precision_at_i_plus_1 = relevant_hits / (i + 1.0)
+            ap_sum += precision_at_i_plus_1
+            
+    if relevant_hits == 0:
+        return 0.0
+        
+    return ap_sum / relevant_hits
+
+# --- Helper Functions from Training Script (Adapted) ---
+def load_raw_data_eval(file_path):
+    t_start = time.time()
+    logger.info(f"Loading raw evaluation data from: {file_path}")
+    try:
+        df = pd.read_csv(file_path, low_memory=False)
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.dropna(subset=['date'])
+        logger.info(f"Loaded {len(df)} raw rows. Shape: {df.shape}. Date range: {df['date'].min()} to {df['date'].max()}")
+        if 'contractID' not in df.columns:
+             if 'contract_id' in df.columns: df = df.rename(columns={'contract_id': 'contractID'})
+             elif 'option_symbol' in df.columns: df = df.rename(columns={'option_symbol': 'contractID'})
+             else: raise ValueError("Missing 'contractID' or equivalent column for grouping.")
+        df['contractID'] = df['contractID'].astype(str)
+        df = df.sort_values(by=['date', 'contractID']).reset_index(drop=True)
+        t_end = time.time()
+        logger.info(f"Raw data loading finished in {t_end - t_start:.2f} seconds.")
+        return df
+    except FileNotFoundError:
+        logger.error(f"Error: Input data file not found at {file_path}")
+        raise
+    except Exception as e:
+        logger.error(f"Error loading raw data from {file_path}: {e}", exc_info=True)
+        raise
+
+# REMOVED: Sharpe-based target calculation - replaced with per-day realized returns labeling
+
+# --- Main Evaluation Function ---
+def evaluate_model(args):
+    logger.info(f"--- Starting Model Evaluation ---")
+    logger.info(f"Model pipeline: {args.model_file}")
+    logger.info(f"Evaluation data: {args.eval_data_file}")
+    logger.info(f"Config file: {args.config_file}")
+    logger.info(f"Feature list file: {args.feature_list_file}")
+
+    try:
+        model_pipeline = joblib.load(args.model_file)
+        logger.info(f"Loaded model pipeline successfully.")
+        final_features_to_use = joblib.load(args.feature_list_file)
+        logger.info(f"Loaded feature list with {len(final_features_to_use)} features.")
+    except Exception as e:
+        logger.error(f"Error loading model or artifacts: {e}", exc_info=True)
+        return
+
+    config = load_config(args.config_file)
+    if not config: 
+        logger.error("Failed to load configuration. Exiting.")
+        return
+
+    logger.info("--- Loading and Preparing Evaluation Data ---")
+    df_eval_raw = load_raw_data_eval(args.eval_data_file)
+    if df_eval_raw.empty: return
+
+    df_eval_processed_utils, _ = preprocess_data(df_eval_raw, config, scaler=None)
+    if df_eval_processed_utils.empty: return
+    logger.info(f"Shape after utils.preprocess_data: {df_eval_processed_utils.shape}")
+
+    logger.info("--- Creating Per-Day Realized Forward Returns Labels for Evaluation ---")
+    # Get horizon from config, consistent with training
+    horizon_days = config.get('label_horizon_days', 3)
+    df_eval_with_target = make_daily_rank_labels(df_eval_processed_utils, h=horizon_days, price_col='last_raw', config=config)
+    
+    if df_eval_with_target.empty: 
+        logger.error("Failed to create evaluation labels. No valid data for evaluation.")
+        return
+    logger.info(f"Shape after realized return labeling: {df_eval_with_target.shape}")
+
+    X_eval_data = df_eval_with_target[final_features_to_use]
+    y_eval_true = df_eval_with_target['rank_label']
+    df_eval_for_groups = df_eval_with_target.sort_values('date')
+    X_eval_data = X_eval_data.loc[df_eval_for_groups.index]
+    y_eval_true = y_eval_true.loc[df_eval_for_groups.index]
+
+    if X_eval_data.empty: return
+
+    logger.info(f"--- Making Predictions using loaded model pipeline (on {len(X_eval_data)} samples) ---")
+    try:
+        y_pred_scores = model_pipeline.predict(X_eval_data)
+        logger.info(f"Predictions made successfully. Shape: {y_pred_scores.shape}")
+    except Exception as e:
+        logger.error(f"Error during prediction: {e}", exc_info=True)
+        if X_eval_data.isnull().values.any():
+            logger.error("X_eval_data contains NaNs before pipeline.predict:")
+            logger.error(X_eval_data.isnull().sum()[X_eval_data.isnull().sum() > 0].to_string())
+        if np.isinf(X_eval_data.select_dtypes(include=np.number)).values.any():
+            logger.error("X_eval_data contains Infs before pipeline.predict")
+        return
+
+    logger.info(f"--- Calculating Metrics ---")
+    eval_group_info = get_group_info(df_eval_for_groups)
+
+    ndcg_scores_by_k = {k: [] for k in K_VALUES}
+    precision_scores_by_k = {k: [] for k in K_VALUES}
+    ap_scores_by_k = {k: [] for k in K_VALUES}
+
+    current_pos = 0
+    for group_size in eval_group_info:
+        if group_size == 0: continue
+        y_true_group = y_eval_true.iloc[current_pos : current_pos + group_size].values
+        y_pred_group_scores = y_pred_scores[current_pos : current_pos + group_size]
+        current_pos += group_size
+        if len(y_true_group) < 1: continue
+
+        for k_val in K_VALUES:
+            actual_k = min(k_val, len(y_true_group))
+            if actual_k <= 0: continue
+            
+            try:
+                ndcg_sc = ndcg_score(np.asarray([y_true_group]), np.asarray([y_pred_group_scores]), k=actual_k)
+                ndcg_scores_by_k[k_val].append(ndcg_sc)
+            except ValueError as ve:
+                logger.warning(f"NDCG@{actual_k} error for group: {ve}")
+                ndcg_scores_by_k[k_val].append(np.nan)
+
+            prec_sc = calculate_precision_at_k(y_true_group, y_pred_group_scores, actual_k)
+            precision_scores_by_k[k_val].append(prec_sc)
+
+            ap_sc = calculate_average_precision_at_k(y_true_group, y_pred_group_scores, actual_k)
+            ap_scores_by_k[k_val].append(ap_sc)
+    
+    logger.info(f"=== Evaluation Complete ===")
+    logger.info(f"Number of groups (days) evaluated: {len(eval_group_info)}")
+
+    for k_val in K_VALUES:
+        mean_ndcg = np.nanmean(ndcg_scores_by_k[k_val]) if ndcg_scores_by_k[k_val] else np.nan
+        valid_ndcg_count = len([s for s in ndcg_scores_by_k[k_val] if not np.isnan(s)])
+        logger.info(f"Mean NDCG@{k_val}: {mean_ndcg:.4f} (from {valid_ndcg_count} groups)")
+
+        mean_precision = np.nanmean(precision_scores_by_k[k_val]) if precision_scores_by_k[k_val] else np.nan
+        logger.info(f"Mean Precision@{k_val}: {mean_precision:.4f}")
+
+        mean_ap = np.nanmean(ap_scores_by_k[k_val]) if ap_scores_by_k[k_val] else np.nan
+        logger.info(f"Mean Average Precision (MAP)@{k_val}: {mean_ap:.4f}")
+        logger.info("---")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Evaluate a trained XGBoost Ranking Model.")
+    parser.add_argument("--model-file", type=str, required=True, help="Path to the trained .joblib model pipeline file.")
+    parser.add_argument("--eval-data-file", type=str, required=True, help="Path to the CSV data file for evaluation.")
+    parser.add_argument("--config-file", type=str, required=True, help="Path to the preprocessing config.yaml file.")
+    parser.add_argument("--feature-list-file", type=str, required=True, help="Path to the .pkl file containing the list of feature names.")
+    # REMOVED: --sharpe-edges-file argument - no longer needed with per-day ranking
+    # Removed --ndcg-k as we use K_VALUES now
+
+    args = parser.parse_args()
+    evaluate_model(args) 

@@ -1,0 +1,102 @@
+{
+  "step2_baseline": {
+    "source": "User-provided step2 results",
+    "data_year": "2023",
+    "groups": 248,
+    "eval_samples": 834144,
+    "metrics": {
+      "ndcg_1": 0.9113,
+      "ndcg_5": 0.8975,
+      "ndcg_10": 0.8698,
+      "ndcg_20": 0.8317,
+      "precision_1": 0.9879,
+      "precision_5": 0.9637,
+      "precision_10": 0.9444,
+      "precision_20": 0.9169,
+      "map_1": 0.9879,
+      "map_5": 0.9867,
+      "map_10": 0.9752,
+      "map_20": 0.9578
+    }
+  },
+  "step3_improved": {
+    "training": {
+      "grid_search": {
+        "best_config": {
+          "bins_key": "bins_a",
+          "max_depth": 5,
+          "learning_rate": 0.05,
+          "subsample": 0.7,
+          "colsample_bytree": 0.6,
+          "val_ndcg20": 0.4480,
+          "best_iteration": 4
+        },
+        "total_configs_tested": 48,
+        "improvements": [
+          "Early stopping with 10-day recent validation window",
+          "Midprice preference (99.9% coverage with bid/ask)",
+          "Grid search over 24 parameter combinations x 2 bin sets",
+          "Configurable rank_label_bins (tested 5-bin vs 4-bin approaches)"
+        ]
+      }
+    },
+    "evaluation": {
+      "2023": {
+        "groups": 247,
+        "eval_samples": 847588,
+        "coverage": "86.2%",
+        "metrics": {
+          "ndcg_1": 0.3462,
+          "ndcg_5": 0.3335,
+          "ndcg_10": 0.3223,
+          "ndcg_20": 0.3174,
+          "precision_1": 0.3927,
+          "precision_5": 0.3733,
+          "precision_10": 0.3583,
+          "precision_20": 0.3591,
+          "map_1": 0.3927,
+          "map_5": 0.4275,
+          "map_10": 0.4188,
+          "map_20": 0.4129
+        }
+      },
+      "2025": {
+        "groups": 41,
+        "eval_samples": 164846,
+        "coverage": "76.9%",
+        "metrics": {
+          "ndcg_1": 0.3841,
+          "ndcg_5": 0.3633,
+          "ndcg_10": 0.3643,
+          "ndcg_20": 0.3604,
+          "precision_1": 0.4878,
+          "precision_5": 0.4585,
+          "precision_10": 0.4537,
+          "precision_20": 0.4476,
+          "map_1": 0.4878,
+          "map_5": 0.4976,
+          "map_10": 0.4823,
+          "map_20": 0.4776
+        }
+      }
+    }
+  },
+  "decision_gate_analysis": {
+    "criteria": "Accept [CRITICAL] 8 only if mean NDCG@20 improves by ≥ +0.05 absolute on both 2023 and 2025 OR improves by ≥ +0.03 and precision@5/10 improves by ≥ +0.03",
+    "results": {
+      "2023": {
+        "ndcg_20_delta": -0.5143,
+        "precision_5_delta": -0.5904,
+        "precision_10_delta": -0.5861
+      },
+      "2025": {
+        "ndcg_20_delta": -0.4713,
+        "precision_5_delta": -0.5052,
+        "precision_10_delta": -0.4907
+      }
+    },
+    "outcome": "REJECTED",
+    "reason": "All metrics show massive decreases (-0.47 to -0.59) instead of required improvements (+0.03 to +0.05). Per-day realized return labeling fundamentally underperforms Sharpe-based approach.",
+    "recommendation": "Revert to step2_causal_features approach. Mark [CRITICAL] 8 as rejected in MODEL_FIXES.md."
+  }
+}

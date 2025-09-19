@@ -1,0 +1,132 @@
+# config.yaml
+# Data source configuration:
+# SM_CHANNEL_TRAIN environment variable is used for loading data.
+# If SM_CHANNEL_TRAIN is not set, a fallback S3 path ("s3://yel-spy-etled-4.0/processed_data/") will be used.
+data_source:
+  s3_data_path: "s3://yel-spy-etled-4.0/processed_data/year=2008/" # Added S3 data path here
+
+train_start_date: "2010-01-01"  
+train_end_date: "2010-09-30"    
+validation_start_date: "2010-10-01" 
+validation_end_date: "2010-12-31"  
+
+model_type: "hybrid"  # Options: "hybrid" or "lstm"
+lstm_units: 500
+transformer_heads: 4
+transformer_layers: 2
+dense_units: 32
+learning_rate: 0.0001329291894316216
+batch_size: 16
+lookback_window: 10  # Number of past time steps for models that use sequential data
+
+gamma: 0.9941207163345817
+ppo_clip_range: 0.2197316968394073
+ppo_epochs: 10
+entropy_coef: 0.015702970884055395
+vix_sensitivity: 0.5
+max_holding_days: 10
+# Updated reward configuration
+reward_bonus_threshold: 0.024646688973455958  # 5% ROI for bonus
+reward_exceptional_threshold: 0.1799264218662403  # 10% ROI for exceptional bonus
+reward_holding_bonus: 0.003005575058716044  # Small bonus per day for holding profitable positions
+loss_penalty_factor: 2.416145155592091
+# New reward parameters
+transaction_cost: 0.0005308767414437036  # 0.1% transaction cost (commissions, slippage)
+min_profitable_threshold: 0.019548647782429915  # 1% minimum ROI to be considered worthwhile
+time_decay_factor: 0.9749198376720379  # Decay factor for time value of money
+large_loss_threshold: -0.08513626225252068  # -5% threshold for larger loss penalties
+large_loss_extra_penalty: 1.1727299868828402  # Additional multiplier for large losses
+
+total_timesteps: 100000  # Total timesteps for training (formerly num_episodes)
+checkpoint_frequency: 500  # Save model every N checkpoints
+num_envs: 4               # Number of parallel environments
+# output_dir: "/opt/ml/model" # SageMaker location
+# output_dir is now set programmatically in the scripts to use the absolute path to the model directory
+
+device: "cpu"  # Changed to cpu since we're running on ml.m5.large without GPU
+
+# Capital constraints for realistic trading
+starting_capital: 10000.0  # Initial account balance ($10,000)
+max_position_value: 0.5    # Maximum 50% of capital per position
+min_trade_size: 0.05       # Minimum 5% of capital per position
+
+# Add this section with the list of columns that represent the Greeks and any other engineered features.
+greeks_cols:
+  - delta
+  - gamma
+  - theta
+  - vega
+  - rho
+  - implied_volatility
+
+# Preprocessing configuration for utils.py
+min_price_threshold: 0.05
+use_tsfresh: false  # DISABLED - replaced with causal rolling features
+use_causal_rolling: true  # Enable causal rolling features (no lookahead bias)
+# NOTE: last and implied_volatility are preserved as _raw columns before scaling
+# The _raw versions are used for return/target calculations to avoid computing returns on scaled values
+# The scaled versions are kept for other ML models that may benefit from normalization
+#
+# NEW CAUSAL ROLLING FEATURES (added in step2):
+# - price_roll_mean_{5,20}: Rolling mean of last_raw price
+# - price_roll_std_{5,20}: Rolling std of last_raw price  
+# - price_roll_min_{5,20}: Rolling min of last_raw price
+# - price_roll_max_{5,20}: Rolling max of last_raw price
+# - price_roll_zscore_{5,20}: Z-score using rolling mean/std
+# - iv_roll_mean_{5,20}: Rolling mean of implied_volatility_raw
+# - iv_roll_std_{5,20}: Rolling std of implied_volatility_raw
+# - vol_roll_mean_{5,20}: Rolling mean of volume
+# - oi_roll_mean_{5,20}: Rolling mean of open_interest
+# - vol_oi_ratio: volume / (open_interest + eps)
+# All rolling features use min_periods and are filled with 0 for early rows
+numerical_cols_to_scale:
+  - strike
+  - last
+  - bid
+  - ask
+  - volume
+  - open_interest
+  - implied_volatility
+  - delta
+  - gamma
+  - theta
+  - vega
+  - rho
+  - days_to_exp
+  - spy_d_close
+  - spy_d_SMA_50
+  - spy_d_RSI
+  - spy_d_MACD_Hist
+  - vix_d_close
+  - moneyness
+  - relative_spread
+  - bid_ask_spread
+  - ofi
+  - price_change_1d
+  - iv_change_1d
+  - zero_day_premium
+  - option_volume_oi_ratio
+  - mispricing_ratio
+  - risk_adjusted_signal
+  - iv_vix_ratio
+  - spy_momentum
+  # Causal rolling features (added in step2)
+  - price_roll_mean_5
+  - price_roll_mean_20
+  - price_roll_std_5
+  - price_roll_std_20
+  - price_roll_min_5
+  - price_roll_min_20
+  - price_roll_max_5
+  - price_roll_max_20
+  - price_roll_zscore_5
+  - price_roll_zscore_20
+  - iv_roll_mean_5
+  - iv_roll_mean_20
+  - iv_roll_std_5
+  - iv_roll_std_20
+  - vol_roll_mean_5
+  - vol_roll_mean_20
+  - oi_roll_mean_5
+  - oi_roll_mean_20
+  - vol_oi_ratio

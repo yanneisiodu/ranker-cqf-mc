@@ -1,0 +1,9 @@
+pandas
+numpy
+xgboost
+scikit-learn
+joblib
+optuna
+boto3
+tsfresh
+gym 

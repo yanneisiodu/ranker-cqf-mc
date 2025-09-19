@@ -1,0 +1,50 @@
+{
+  "timestamp": "20250830_123827",
+  "training_years": "2022-2022",
+  "package_versions": {
+    "numpy": "1.26.4",
+    "pandas": "2.3.1",
+    "scikit_learn": "1.7.1",
+    "xgboost": "3.0.4"
+  },
+  "seeds": {
+    "python": 42,
+    "numpy": 42,
+    "xgboost": 42
+  },
+  "config_params": {
+    "val_days": 10,
+    "min_rows_per_day": 200,
+    "min_target_coverage": 0.8,
+    "spread_cap": 0.6
+  },
+  "final_params": {
+    "objective": "rank:ndcg",
+    "eval_metric": "ndcg@20",
+    "tree_method": "hist",
+    "seed": 42,
+    "n_jobs": -1,
+    "n_estimators": 1500,
+    "early_stopping_rounds": 50,
+    "learning_rate": 0.06326509803163745,
+    "max_depth": 3,
+    "subsample": 0.7822444357631866,
+    "colsample_bytree": 0.7333407813790271,
+    "gamma": 0.14988133139247198,
+    "reg_alpha": 1.0693728241301906e-06,
+    "reg_lambda": 1.0903140623130713e-07
+  },
+  "features_count": 28,
+  "train_date_range": [
+    "2022-01-03 00:00:00",
+    "2022-12-13 00:00:00"
+  ],
+  "val_date_range": [
+    "2022-12-14 00:00:00",
+    "2022-12-28 00:00:00"
+  ],
+  "train_samples": 1040475,
+  "val_samples": 31106,
+  "best_iteration": 152,
+  "optuna_trials": 0
+}
