@@ -74,6 +74,7 @@ class StressConfig:
     min_prob_profit: float = 0.45
     max_downside_var: float = 0.15     # allow at most -15% 5%-VaR in return space
     lookback_days: int = 252          # for SPY shock calibration
+    min_history_days: int = 10        # minimum days required before falling back to defaults
     random_seed: int = 42
 
     # Parallelism (joblib). If joblib not available, runs single-thread.
@@ -273,11 +274,22 @@ class EnhancedStressMC:
         hist["date"] = pd.to_datetime(hist["date"], errors="coerce")
         mask = (hist["date"] >= start_date) & (hist["date"] <= end_date)
         hist = hist.loc[mask].sort_values("date")
-        if len(hist) < 30:
-            logger.warning(f"Insufficient SPY history ({len(hist)} days) - using defaults")
+        min_history = max(5, int(getattr(self.config, "min_history_days", 10)))
+        if len(hist) < min_history:
+            logger.warning(
+                "Insufficient SPY history (%d days < %d) - using defaults",
+                len(hist),
+                min_history,
+            )
             shocks = self._default_shocks()
             self._shock_cache[key] = shocks
             return shocks
+
+        if len(hist) < 30:
+            logger.info(
+                "Limited SPY history (%d days) – calibrating shocks with adaptive window",
+                len(hist),
+            )
 
         hist["ret"] = hist["close"].pct_change()
         hist["vol20"] = hist["ret"].rolling(20).std() * np.sqrt(252)
@@ -286,6 +298,14 @@ class EnhancedStressMC:
 
         w = self.config.scenario_weights
         rets = hist["ret"].dropna()
+        if len(rets) < max(3, min_history // 2):
+            logger.warning(
+                "Not enough SPY return observations (%d) for calibration – using defaults",
+                len(rets),
+            )
+            shocks = self._default_shocks()
+            self._shock_cache[key] = shocks
+            return shocks
         shocks = {
             "base_case": {
                 "prob": w["base_case"],
