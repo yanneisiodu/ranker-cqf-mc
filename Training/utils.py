@@ -15,7 +15,6 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from logger import setup_logger
 import time
-import gym
 
 logger = setup_logger(__name__)
 
@@ -538,15 +537,9 @@ def create_env(data, config, max_holding_days_override=None, flatten_observation
             logger.info(f"Creating env with max_holding_days: {max_holding_days_override}")
         env = EnhancedCapitalConstrainedEnv(**env_kwargs)
         
-        # Apply FlattenDictObservationWrapper if requested
+        # Flatten observation wrapper functionality removed - no longer needed
         if flatten_observation:
-            from action_wrapper import FlattenDictObservationWrapper
-            if isinstance(env.observation_space, gym.spaces.Dict):
-                logger.info("Applying FlattenDictObservationWrapper to environment")
-                env = FlattenDictObservationWrapper(env)
-                logger.info(f"Flattened observation space to shape {env.observation_space.shape}")
-            else:
-                logger.warning("Cannot apply FlattenDictObservationWrapper - observation space is not Dict")
+            logger.warning("Flatten observation wrapper functionality has been removed. Ignoring flatten_observation parameter.")
         
         return env
     except Exception as e:
