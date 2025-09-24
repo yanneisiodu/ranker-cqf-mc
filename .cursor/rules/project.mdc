@@ -1,0 +1,83 @@
+# Trading Agent Project Rules
+
+## Project Architecture
+This is a sophisticated algorithmic trading system with the following key components:
+
+### Core Pipeline Structure
+1. **Inference Pipeline** (`inference/run_inference.py`) - Main production pipeline integrating:
+   - XGBoost ranking models for option selection
+   - CQF (Calibrated Quantile Forecasting) for risk prediction
+   - Enhanced Stress MC for portfolio risk assessment
+   - LLM-powered stress testing (basic + ultra-agent modes)
+
+2. **Training Pipeline** (`Training/`) contains:
+   - `prod_train_ranker.py` - XGBoost ranking model training with time-series validation
+   - `prod_cqf.py` - Advanced quantile forecasting with regime detection, conformal prediction, and EVT tail protection
+   - `iql_pipeline.py` - Offline reinforcement learning using Implicit Q-Learning (IQL)
+   - `utils.py` - Core preprocessing with causal rolling features and time-decay weights
+
+### Key Technologies & Libraries
+- **XGBoost**: Ranking models and quantile regression (requires >= 2.0)
+- **Scikit-learn**: Feature preprocessing, scaling, and validation
+- **d3rlpy**: Discrete Conservative Q-Learning for offline RL
+- **Optuna**: Hyperparameter optimization
+- **Joblib**: Model serialization and parallel processing
+- **Pandas/NumPy**: Data manipulation and numerical computing
+
+## Code Quality Standards
+
+### Error Handling & Logging
+- Use the centralized `logger.py` setup pattern from Training/
+- Include comprehensive error handling in all model training and inference
+- Log performance metrics, model validation results, and coverage statistics
+- Handle missing data gracefully with fallback strategies
+
+### Financial Engineering Best Practices
+- **No Future Data Leakage**: Ensure all rolling features and targets use only past data
+- **Time-Series Validation**: Use `PurgedTimeSeriesSplit` for model validation
+- **Delta-Hedged P&L**: Focus on option-specific alpha, not broad market moves
+- **Risk Management**: Implement position sizing, downside protection, and stress testing
+
+### Model Development Patterns
+- **Feature Engineering**: Use causal rolling features, regime detection, volatility clustering
+- **Quantile Models**: Implement conformal prediction for uncertainty quantification
+- **Ranking Models**: Use learning-to-rank objectives (NDCG) for option selection
+- **Stress Testing**: Combine Monte Carlo simulation with LLM scenario generation
+
+## Trading-Specific Implementation Rules
+
+### Data Processing
+- Always preserve raw columns (`last_raw`, `implied_volatility_raw`) before scaling
+- Use `RobustScaler` for numerical features to handle outliers
+- Implement proper option Greeks calculation and moneyness features
+- Apply time-decay weights for recent data importance
+
+### Model Training
+- Use time-based train/validation/test splits (not random)
+- Implement purged windows between train/test to prevent leakage
+- Apply early stopping with validation sets for XGBoost models
+- Store model metadata including feature names and preprocessing artifacts
+
+### Risk & Portfolio Management
+- Implement utility-based ranking combining expected return and risk aversion
+- Use conformal prediction intervals for uncertainty quantification
+- Apply stress testing with multiple scenario generation methods
+- Include regime detection for adaptive model behavior
+
+### Production Pipeline
+- Ensure reproducible model inference with deterministic seeding
+- Support both MC and LLM stress testing modes with fallbacks
+- Implement proper validation of input data shapes and feature availability
+- Include comprehensive logging for debugging and monitoring
+
+## Environment & Dependencies
+- Python environment with scientific computing stack
+- XGBoost >= 2.0 for native quantile regression support
+- Optional: d3rlpy for reinforcement learning components
+- Optional: OpenAI API for LLM-powered stress testing
+
+## File Organization Patterns
+- Model artifacts in `model_output/` with timestamped naming
+- Configuration in YAML files with environment-specific settings
+- Separate inference and training code with shared utilities
+- Clear separation between data processing, training, and inference phases

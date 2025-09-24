@@ -273,7 +273,7 @@ class EnhancedStressMC:
         hist["date"] = pd.to_datetime(hist["date"], errors="coerce")
         mask = (hist["date"] >= start_date) & (hist["date"] <= end_date)
         hist = hist.loc[mask].sort_values("date")
-        if len(hist) < 30:
+        if len(hist) < 25:
             logger.warning(f"Insufficient SPY history ({len(hist)} days) - using defaults")
             shocks = self._default_shocks()
             self._shock_cache[key] = shocks

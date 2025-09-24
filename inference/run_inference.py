@@ -140,6 +140,10 @@ def main():
                    help="Maximum number of LLM prompts; fallback to MC if exceeded")
     p.add_argument('--llm-max-contracts', type=int, default=20,
                    help="Upper bound on contracts evaluated when LLM mode is active")
+    p.add_argument('--max-downside-var', type=float, default=0.15,
+                   help="Maximum downside variance allowed for risk filtering (default: 0.15 = 15%)")
+    p.add_argument('--skip-future-targets', action='store_true',
+                   help="Skip computing forward-looking Sharpe and PnL targets (production-safe)")
     args = p.parse_args()
 
     if args.llm_api_key is None and args.llm_provider == 'openai':
@@ -173,38 +177,50 @@ def main():
     processed_df = add_regime_features(processed_df)
     processed_df = add_realized_vol_features(processed_df)
 
-    logger.info("Computing target Sharpe for diagnostics")
-    target_df = calculate_target(processed_df.copy(), TARGET_LOOKAHEAD_DAYS)
-
-    logger.info("Computing delta-hedged PnL targets for CQF monitoring")
-    temp_cqf = OptimalCQF()
-    pnl_df = temp_cqf.calculate_delta_hedged_pnl(processed_df.copy(), TARGET_LOOKAHEAD_DAYS)
-    target_df = target_df.merge(
-        pnl_df[['contractID', 'date', 'target_pnl', 'future_option_price']],
-        on=['contractID', 'date'],
-        how='left'
-    )
-
-    # Map to integer relevance using training quantiles
-    edges = joblib.load(args.sharpe_edges)
-    q1, q2, q3 = edges[1], edges[2], edges[3]
-    target_df['target_relevance_int'] = pd.cut(
-        target_df['target_5d_sharpe'],
-        bins=edges,
-        labels=[0, 1, 2, 3]
-    ).astype(int)
-
-    # Ranker inference
     ranker_model = joblib.load(args.ranker_model)
     feature_list = joblib.load(args.ranker_features)
+
+    if args.skip_future_targets:
+        logger.info("Skipping future-dependent targets (production mode)")
+        target_df = processed_df.copy().reset_index(drop=True)
+        if 'target_5d_sharpe' not in target_df.columns:
+            target_df['target_5d_sharpe'] = np.nan
+        target_df['target_pnl'] = np.nan
+        target_df['future_option_price'] = np.nan
+        target_df['target_relevance_int'] = 0
+        edges = None
+    else:
+        logger.info("Computing target Sharpe for diagnostics")
+        target_df = calculate_target(processed_df.copy(), TARGET_LOOKAHEAD_DAYS)
+
+        logger.info("Computing delta-hedged PnL targets for CQF monitoring")
+        temp_cqf = OptimalCQF()
+        pnl_df = temp_cqf.calculate_delta_hedged_pnl(processed_df.copy(), TARGET_LOOKAHEAD_DAYS)
+        target_df = target_df.merge(
+            pnl_df[['contractID', 'date', 'target_pnl', 'future_option_price']],
+            on=['contractID', 'date'],
+            how='left'
+        )
+
+        edges = joblib.load(args.sharpe_edges)
+        q1, q2, q3 = edges[1], edges[2], edges[3]
+        target_df['target_relevance_int'] = pd.cut(
+            target_df['target_5d_sharpe'],
+            bins=edges,
+            labels=[0, 1, 2, 3]
+        ).astype(int)
+
     X_ranker = target_df[['date'] + feature_list].copy()
     if 'type' in X_ranker.columns:
         X_ranker['type'] = X_ranker['type'].astype(str)
     scores = ranker_model.predict(X_ranker[feature_list])
     target_df['ranker_score'] = scores
 
-    metrics = evaluate_ranker_metrics(target_df)
-    logger.info("Ranker metrics: %s", metrics)
+    if not args.skip_future_targets:
+        metrics = evaluate_ranker_metrics(target_df)
+        logger.info("Ranker metrics: %s", metrics)
+    else:
+        logger.info("Ranker metrics skipped (no future targets in production mode)")
 
     effective_top_n = args.top_n
     if args.stress_mode in ('llm', 'shadow') and args.llm_max_contracts is not None:
@@ -266,14 +282,17 @@ def main():
     cqf_output = pd.concat([cqf_output, price_preds], axis=1)
     cqf_output.to_csv(output_dir / 'cqf_predictions.csv', index=False)
 
-    coverage_metrics = evaluate_cqf_coverage(cqf, top_n, quantile_preds)
-    logger.info("CQF coverage metrics: %s", coverage_metrics)
+    if not args.skip_future_targets:
+        coverage_metrics = evaluate_cqf_coverage(cqf, top_n, quantile_preds)
+        logger.info("CQF coverage metrics: %s", coverage_metrics)
+    else:
+        logger.info("CQF coverage metrics skipped (no future targets)")
 
     # Stress MC
     lookback = 252
     if spy_history_full is not None and not spy_history_full.empty:
         lookback = min(lookback, max(30, len(spy_history_full) - 1))
-    stress_cfg = StressConfig(n_paths=5000, risk_aversion=0.5, min_prob_profit=args.min_prob_profit, max_downside_var=0.15, lookback_days=lookback)
+    stress_cfg = StressConfig(n_paths=5000, risk_aversion=0.5, min_prob_profit=args.min_prob_profit, max_downside_var=args.max_downside_var, lookback_days=lookback)
     mc = EnhancedStressMC(stress_cfg)
 
     stress_module = stress_agent if args.llm_engine == 'agent' else stress_basic
@@ -330,8 +349,17 @@ def main():
         spy_history['date'] = pd.to_datetime(spy_history['date'], errors='coerce')
         spy_history = spy_history.dropna(subset=['date'])
 
-    # Use spy_history if it exists and is not empty, otherwise use spy_history_full
-    selected_spy_history = spy_history if spy_history is not None and not spy_history.empty else spy_history_full
+    # Use spy_history only if it has sufficient data for calibration, otherwise use spy_history_full
+    min_required_days = 25  # Minimum days needed for reliable SPY shock calibration
+    if spy_history is not None and len(spy_history) >= min_required_days:
+        selected_spy_history = spy_history
+        logger.info(f"Using spy_history from mc_inputs ({len(spy_history)} days)")
+    else:
+        selected_spy_history = spy_history_full
+        if spy_history is not None:
+            logger.info(f"spy_history insufficient ({len(spy_history)} days), using spy_history_full ({len(spy_history_full) if spy_history_full is not None else 0} days)")
+        else:
+            logger.info(f"No spy_history from mc_inputs, using spy_history_full ({len(spy_history_full) if spy_history_full is not None else 0} days)")
     stress_results_mc = mc.rank_contracts(mc_inputs, spy_history=selected_spy_history)
 
     llm_results = None

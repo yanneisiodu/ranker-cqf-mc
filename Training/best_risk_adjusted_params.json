@@ -1,0 +1,34 @@
+{
+  "optimization_summary": {
+    "study_name": "risk_adjusted_v1_trial_74",
+    "optimization_focus": "calmar_ratio_maximization",
+    "performance_achieved": {
+      "win_rate": 0.8658536585365854,
+      "return_pct": 7988.935489300164,
+      "max_drawdown": 0.15227468589369755,
+      "calmar_ratio": 692.5244852081273,
+      "total_trades": 82,
+      "halted_trades": 5
+    },
+    "best_params": {
+      "base_contracts": 10,
+      "base_notional": 1000.0,
+      "enable_risk_controls": true,
+      "max_notional_pct": 0.10,
+      "commission_per_side": 0.65,
+      "exchange_fee_per_side": 0.05,
+      "slippage_min": 0.02,
+      "slippage_pct": 0.20,
+      "enable_portfolio_stop_loss": false,
+      "enable_single_trade_cap": false,
+      "enable_market_halt_protection": true,
+      "halt_vol_emergency_only": true,
+      "enable_consecutive_loss_breaker": true,
+      "max_consecutive_losses": 18,
+      "enable_position_multiplier": true,
+      "position_multiplier": 2.5,
+      "enable_return_filter": false,
+      "preserve_contract_risk_filter": true
+    }
+  }
+}

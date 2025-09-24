@@ -7,3 +7,5 @@ optuna
 boto3
 tsfresh
 gym 
+streamlit
+plotly

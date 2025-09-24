@@ -1,0 +1,13 @@
+{
+  "decisions": 122,
+  "cql_total_reward": 18.343513926252932,
+  "cql_mean_reward": 0.15035667152666338,
+  "behaviour_total_reward": 17.762647229302548,
+  "behaviour_mean_reward": 0.14559546909264384,
+  "reward_lift": 0.580866696950384,
+  "action_counts": {
+    "1": 75,
+    "2": 46,
+    "6": 1
+  }
+}

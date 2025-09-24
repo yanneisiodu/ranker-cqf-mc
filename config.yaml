@@ -93,3 +93,33 @@ numerical_cols_to_scale:
   - risk_adjusted_signal
   - iv_vix_ratio
   - spy_momentum
+
+# Optimized Behavior Policy Parameters (from Optuna Trial 93: 18.79 objective score, 100-trial optimization)
+behavior_policy:
+  # Strategy mix weights (must sum to 1.0)
+  prob_weight: 0.4434            # Best probability of profit strategy weight  
+  exp_weight: 0.2433             # Best expected return strategy weight
+  expl_weight: 0.3134            # Random exploration weight (1.0 - prob_weight - exp_weight)
+  
+  # Decision thresholds for position sizing
+  prob_threshold: 0.5435         # Probability threshold for full position size
+  exp_threshold: 0.0863          # Expected return threshold for full position size
+  
+  # Exploration slot preferences (must sum to 1.0)
+  exploration_slot_probs:
+    slot1: 0.2781                # Slot 1 preference in exploration
+    slot2: 0.2425                # Slot 2 preference in exploration  
+    slot3: 0.2575                # Slot 3 preference in exploration
+    slot4: 0.1721                # Slot 4 preference in exploration
+    slot5: 0.0498                # Slot 5 preference (remaining)
+  
+  # Position sizing ratios
+  size_ratio_conservative: 0.3001 # Conservative position size multiplier
+  size_ratio_aggressive: 0.9841  # Aggressive position size multiplier
+  
+  # Original hardcoded values (for reference/comparison)
+  # prob_weight_original: 0.60
+  # exp_weight_original: 0.25  
+  # expl_weight_original: 0.15
+  # prob_threshold_original: 0.60
+  # exp_threshold_original: 0.10

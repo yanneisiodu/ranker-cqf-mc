@@ -1,0 +1,11 @@
+{
+  "enable_portfolio_stop_loss": true,
+  "enable_single_trade_cap": false,
+  "enable_market_halt_protection": false,
+  "enable_consecutive_loss_breaker": true,
+  "portfolio_stop_loss_pct": 0.6,
+  "max_consecutive_losses": 46,
+  "enable_position_multiplier": true,
+  "position_multiplier": 2.0,
+  "enable_return_filter": false
+}

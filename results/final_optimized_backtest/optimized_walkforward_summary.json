@@ -1,0 +1,20 @@
+{
+  "initial_capital": 10000.0,
+  "final_capital": 604008.4453609998,
+  "total_pnl": 594008.4453609998,
+  "total_fees": 1513.68,
+  "total_slippage": 8904.0,
+  "total_trades": 113,
+  "winning_trades": 42,
+  "losing_trades": 71,
+  "win_rate": 0.37168141592920356,
+  "return_pct": 5940.0844536099985,
+  "max_drawdown": 0.0,
+  "risk_controls_enabled": true,
+  "base_contracts": 11,
+  "base_notional": 2000.0,
+  "avg_trade_pnl": 5348.903764256643,
+  "largest_win": 309494.5588420907,
+  "largest_loss": -76222.30164487909,
+  "profit_factor": 3.243101186041463
+}

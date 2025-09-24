@@ -1,0 +1,13 @@
+{
+  "strategy_mix": {
+    "best_prob_profit": 0.6,
+    "best_expected_return": 0.25,
+    "random_exploration": 0.15
+  },
+  "improvements": {
+    "action_diversity": 10,
+    "slot_diversity": 5,
+    "total_pnl": 23.69265267433897,
+    "hit_rate": 0.415929203539823
+  }
+}

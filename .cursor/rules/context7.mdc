@@ -1,0 +1,27 @@
+# Context7 Auto-invocation Rules
+
+## Always Use Context7
+When the user requests any of the following, automatically use Context7:
+- Code examples and generation
+- Library/API documentation
+- Setup and configuration steps
+- Framework implementation guidance
+- Dependency management
+- Best practices for libraries
+- Troubleshooting library issues
+
+## Context7 Triggers
+Use Context7 for:
+- All external library interactions (pandas, numpy, xgboost, scikit-learn, etc.)
+- Python package documentation
+- Machine learning framework guidance
+- Data science workflow implementation
+- API integration examples
+- Configuration file creation
+
+## Project Context
+This is a trading agent project using XGBoost models. Prioritize up-to-date documentation for:
+- XGBoost and machine learning libraries
+- Data processing frameworks
+- Trading and financial libraries
+- Python best practices for quantitative finance

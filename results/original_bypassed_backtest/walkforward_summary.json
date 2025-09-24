@@ -1,0 +1,9 @@
+{
+  "initial_capital": 10000.0,
+  "final_capital": 35402.07133455054,
+  "total_pnl": 25402.071334550543,
+  "total_fees": 287.0,
+  "total_slippage": 820.0,
+  "trades": 80,
+  "return_pct": 254.0207133455054
+}

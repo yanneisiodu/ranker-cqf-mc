@@ -1,0 +1,8 @@
+{
+  "enable_portfolio_stop_loss": false,
+  "enable_single_trade_cap": true,
+  "enable_market_halt_protection": true,
+  "enable_consecutive_loss_breaker": false,
+  "max_single_trade_notional": 120000.0,
+  "halt_vol_emergency_only": true
+}
