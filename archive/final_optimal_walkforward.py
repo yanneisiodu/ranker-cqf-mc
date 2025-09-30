@@ -360,7 +360,27 @@ def main():
     logger.info("Loading decision table and policy...")
     df = pd.read_csv(args.decision_table)
     meta = _load_meta(args.meta)
-    states = _standardise_states(df, meta['state_columns'], meta['scaler_mean'], meta['scaler_scale'])
+    raw_state_cols = meta['state_columns']
+    filtered_state_cols = [
+        col
+        for col in raw_state_cols
+        if not (
+            col.endswith('target_pnl')
+            or col.endswith('future_option_price')
+            or col == 's_target_pnl'
+            or col.endswith('contractID')
+        )
+    ]
+    if not filtered_state_cols:
+        raise ValueError('No valid state columns available after removing realized outcome features')
+    if len(filtered_state_cols) != len(raw_state_cols):
+        keep_indices = [raw_state_cols.index(col) for col in filtered_state_cols]
+        scaler_mean = [meta['scaler_mean'][idx] for idx in keep_indices]
+        scaler_scale = [meta['scaler_scale'][idx] for idx in keep_indices]
+    else:
+        scaler_mean = meta['scaler_mean']
+        scaler_scale = meta['scaler_scale']
+    states = _standardise_states(df, filtered_state_cols, scaler_mean, scaler_scale)
     algo = _load_policy_robust(args.policy, meta)
     predicted_actions = algo.predict(states)
     

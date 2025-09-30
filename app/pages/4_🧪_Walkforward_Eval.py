@@ -4,33 +4,40 @@ import subprocess
 import sys
 
 st.set_page_config(page_title="Walkforward Eval", page_icon="🧪", layout="wide")
-st.title("🧪 Basic Walkforward Evaluation (CQL policy)")
-st.warning("⚠️ This is the BASIC walkforward. For optimal performance, use '🎯 Final Optimal Walkforward' page.")
+st.title("🧪 Walkforward Evaluation")
+st.info("💡 Uses unified walkforward_simulator.py with backtest or leak-free modes")
 
 base = Path(__file__).resolve().parents[2]
 training_dir = base / "Training"
 
 with st.sidebar:
     st.header("Inputs")
-    decision_table = st.text_input("Decision Table CSV", str(base / "final_iql_training_2023/decision_table.csv"))
-    policy = st.text_input("Policy .d3", str(base / "final_iql_training_2023/discrete_cql_policy.d3"))
-    meta = st.text_input("policy_meta.json", str(base / "final_iql_training_2023/policy_meta.json"))
-    outdir = st.text_input("Output Dir", str(base / "walkforward_results"))
+    decision_table = st.text_input("Decision Table CSV", str(base / "iql_out/2023_with_targets/decision_table.csv"))
+    policy = st.text_input("Policy .d3", str(base / "iql_out/2023_training_2022models/discrete_cql_policy.d3"))
+    meta = st.text_input("policy_meta.json", str(base / "iql_out/2023_training_2022models/policy_meta.json"))
+    outdir = st.text_input("Output Dir", str(base / "results/walkforward_eval"))
+    
+    st.subheader("Configuration")
+    mode = st.selectbox("Mode", ["backtest", "leakfree"], index=0, 
+                       help="backtest: uses actual targets | leakfree: simulated PnL")
+    config = st.selectbox("Config", ["trial74", "trial62"], index=0,
+                         help="trial74: 86.6% WR, 2.5× leverage | trial62: 83.9% WR, dynamic sizing")
     initial_capital = st.number_input("Initial Capital", min_value=1000.0, max_value=1e7, value=10000.0, step=1000.0)
-    risk_pct = st.number_input("Risk % per trade", min_value=0.0, max_value=0.1, value=0.005)
+    
     run_btn = st.button("Run Walkforward", type="primary")
 
-st.markdown("Uses `Training/walkforward_simulation.py`. Note: test version relaxes constraints for experimentation.")
+st.markdown("Uses `Training/walkforward_simulator.py` with unified backtest/leak-free modes.")
 
 if run_btn:
     cmd = [
-        sys.executable, str(training_dir / "walkforward_simulation.py"),
+        sys.executable, str(training_dir / "walkforward_simulator.py"),
         "--decision-table", str(Path(decision_table).resolve()),
         "--policy", str(Path(policy).resolve()),
         "--meta", str(Path(meta).resolve()),
         "--outdir", str(Path(outdir).resolve()),
+        "--mode", mode,
+        "--config", config,
         "--initial-capital", str(float(initial_capital)),
-        "--risk-pct", str(float(risk_pct)),
     ]
     st.code(" ".join(cmd), language="bash")
     with st.status("Running walkforward…", expanded=True) as status:

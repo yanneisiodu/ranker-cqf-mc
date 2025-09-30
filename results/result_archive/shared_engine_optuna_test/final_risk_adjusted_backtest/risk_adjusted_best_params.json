@@ -1,0 +1,14 @@
+{
+  "enable_portfolio_stop_loss": false,
+  "enable_single_trade_cap": true,
+  "enable_market_halt_protection": true,
+  "enable_consecutive_loss_breaker": false,
+  "max_single_trade_notional": 150000.0,
+  "halt_vol_emergency_only": true,
+  "enable_position_multiplier": true,
+  "position_multiplier": 1.3,
+  "enable_return_filter": false,
+  "enable_dynamic_sizing": false,
+  "enable_vol_adjustment": true,
+  "vol_lookback": 22
+}

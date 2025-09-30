@@ -1,0 +1,45 @@
+{
+  "study_name": "backtest_86wr_15dd",
+  "objective": "calmar",
+  "mode": "backtest",
+  "n_trials": 200,
+  "constraints": {
+    "min_win_rate": 0.86,
+    "min_trades": 20,
+    "max_drawdown_tolerance": 0.15,
+    "min_return_threshold": 200.0
+  },
+  "baseline": {
+    "win_rate": 0.839,
+    "return_pct": 1119.7,
+    "max_drawdown": 0.649,
+    "trades": 87,
+    "calmar_ratio": 17.3
+  },
+  "best_trial_number": 100,
+  "best_objective_value": 1477460.1537044856,
+  "best_params": {
+    "bypass_all_normal_controls": false,
+    "max_notional_pct": 0.2,
+    "enable_portfolio_stop_loss": false,
+    "enable_single_trade_cap": true,
+    "max_single_trade_notional": 75000,
+    "enable_market_halt_protection": true,
+    "halt_vol_emergency_only": true,
+    "enable_consecutive_loss_breaker": false,
+    "enable_position_multiplier": true,
+    "position_multiplier": 3.0,
+    "enable_dynamic_sizing": true,
+    "lookback_window": 15,
+    "enable_vol_adjustment": true,
+    "vol_lookback": 20,
+    "enable_return_filter": true,
+    "min_expected_return": 0.0
+  },
+  "best_valid_trial": null,
+  "best_valid_params": null,
+  "best_valid_summary": null,
+  "best_valid_metrics": null,
+  "valid_trials_count": 0,
+  "total_trials": 200
+}

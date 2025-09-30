@@ -1,0 +1,57 @@
+{
+  "0": {
+    "slot": 0,
+    "size_idx": -1,
+    "size_value": 0.0
+  },
+  "1": {
+    "slot": 1,
+    "size_idx": 0,
+    "size_value": 0.5
+  },
+  "2": {
+    "slot": 1,
+    "size_idx": 1,
+    "size_value": 1.0
+  },
+  "3": {
+    "slot": 2,
+    "size_idx": 0,
+    "size_value": 0.5
+  },
+  "4": {
+    "slot": 2,
+    "size_idx": 1,
+    "size_value": 1.0
+  },
+  "5": {
+    "slot": 3,
+    "size_idx": 0,
+    "size_value": 0.5
+  },
+  "6": {
+    "slot": 3,
+    "size_idx": 1,
+    "size_value": 1.0
+  },
+  "7": {
+    "slot": 4,
+    "size_idx": 0,
+    "size_value": 0.5
+  },
+  "8": {
+    "slot": 4,
+    "size_idx": 1,
+    "size_value": 1.0
+  },
+  "9": {
+    "slot": 5,
+    "size_idx": 0,
+    "size_value": 0.5
+  },
+  "10": {
+    "slot": 5,
+    "size_idx": 1,
+    "size_value": 1.0
+  }
+}

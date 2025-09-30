@@ -325,7 +325,7 @@ def build_decision_table(df: pd.DataFrame, cfg: BuildConfig) -> pd.DataFrame:
         df,
     )
     summary_cols = _available(
-        ["q0.05", "q0.50", "q0.95", "expected_return", "prob_profit", "utility", "target_pnl"],
+        ["q0.05", "q0.50", "q0.95", "expected_return", "prob_profit", "utility"],
         df,
     )
     candidate_cols = _available(
@@ -336,8 +336,6 @@ def build_decision_table(df: pd.DataFrame, cfg: BuildConfig) -> pd.DataFrame:
             "q0.05",
             "q0.50",
             "q0.95",
-            "target_pnl",
-            "future_option_price",
             "moneyness",
             "days_to_exp",
             "implied_volatility_raw",
@@ -441,9 +439,24 @@ def to_mdp_dataset(decision_df: pd.DataFrame, scaler: Optional[StandardScaler] =
     if decision_df.empty:
         raise ValueError("Decision table is empty; cannot create dataset")
 
-    state_cols = [col for col in decision_df.columns if col.startswith("s_") or col.startswith("c")]
+    # Prevent label/future-information leakage in observations
+    forbidden_terms = ("_target_pnl", "future_option_price", "contractID")
+    state_cols = [
+        c
+        for c in decision_df.columns
+        if (c.startswith("s_") or c.startswith("c"))
+        and not any(term in c for term in forbidden_terms)
+        and c != "s_target_pnl"
+    ]
     if not state_cols:
         raise ValueError("No state columns detected (expected prefixes 's_' or 'c')")
+
+    # Assert no forbidden columns slipped into the observation set
+    bad = [c for c in decision_df.columns if any(term in c for term in forbidden_terms)]
+    if "s_target_pnl" in decision_df.columns:
+        bad.append("s_target_pnl")
+    leaked = sorted(set(state_cols) & set(bad))
+    assert not leaked, f"Leakage in state: {leaked}"
 
     states = decision_df[state_cols].copy()
     states = states.apply(pd.to_numeric, errors="coerce")
@@ -475,7 +488,7 @@ def train_iql(dataset: MDPDataset, action_size: int, cfg: TrainConfig, outdir: P
         alpha=5.0,  # CQL regularization parameter
     )
 
-    algo = DiscreteCQL(config=algo_cfg, device="cpu", enable_ddp=False)
+    algo = DiscreteCQL(config=algo_cfg, device="mps", enable_ddp=False)
     algo.build_with_dataset(dataset)
     algo.fit(
         dataset=dataset,

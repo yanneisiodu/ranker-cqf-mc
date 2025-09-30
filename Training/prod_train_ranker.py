@@ -335,7 +335,7 @@ def main():
     if args.start_year == 2019 and args.end_year == 2023:
         data_files = ["./data_combined/train_2019_2023.csv"]
     else:
-        data_files = [f"./year_{year}_data.csv" for year in range(args.start_year, args.end_year + 1)]
+        data_files = [f"./data/year_{year}_data.csv" for year in range(args.start_year, args.end_year + 1)]
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     train_ranker(data_files, args.config, args.trials, args.start_year, args.end_year, timestamp)

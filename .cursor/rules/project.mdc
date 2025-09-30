@@ -1,5 +1,23 @@
 # Trading Agent Project Rules
 
+## Python Environment Configuration
+
+**CRITICAL**: Always use the project-specific Python environment for ALL operations:
+
+```bash
+/Users/chinonsoisiodu/Documents/Projects/Trading Agent2/trading_env/bin/python3
+```
+
+**Usage in commands**:
+- Direct execution: `/Users/chinonsoisiodu/Documents/Projects/Trading Agent2/trading_env/bin/python3 script.py`
+- For terminal commands: Set alias or use full path
+- Never use system `python3` or `python` - always use project environment
+
+**Environment contains**:
+- All required dependencies (pandas, numpy, xgboost, d3rlpy, etc.)
+- Specific versions validated for this project
+- Custom packages and configurations
+
 ## Project Architecture
 This is a sophisticated algorithmic trading system with the following key components:
 

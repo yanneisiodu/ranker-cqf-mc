@@ -1,0 +1,40 @@
+{
+  "optimization_summary": {
+    "study_name": "realistic_drawdown_20pct",
+    "n_trials": 100,
+    "optimization_focus": "risk_adjusted_calmar_ratio",
+    "constraints": {
+      "min_win_rate": 0.83,
+      "min_trades": 80,
+      "max_drawdown_tolerance": 0.2,
+      "min_return_threshold": 2000.0
+    },
+    "baseline_performance": {
+      "win_rate": 0.839,
+      "return_pct": 1119.7,
+      "max_drawdown": 0.649,
+      "trades": 87,
+      "calmar_ratio": 17.252696456086287
+    },
+    "best_trial_number": 0,
+    "best_calmar_ratio": -1000.0,
+    "best_params": {
+      "enable_portfolio_stop_loss": false,
+      "enable_single_trade_cap": true,
+      "enable_market_halt_protection": true,
+      "enable_consecutive_loss_breaker": false,
+      "max_single_trade_notional": 150000.0,
+      "halt_vol_emergency_only": true,
+      "enable_position_multiplier": true,
+      "position_multiplier": 1.3,
+      "enable_return_filter": false,
+      "enable_dynamic_sizing": false,
+      "enable_vol_adjustment": true,
+      "vol_lookback": 22
+    },
+    "best_performance": null,
+    "valid_trials_count": 0,
+    "total_trials": 0
+  },
+  "all_trials": []
+}

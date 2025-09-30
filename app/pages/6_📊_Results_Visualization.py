@@ -25,30 +25,21 @@ with st.sidebar:
     result_type = st.selectbox(
         "Select Result Type",
         options=[
-            "🏆 Final Optimal (86.6% WR, 7988% Return, 15.2% DD)",
-            "Win-Rate Optimized 🎯", 
-            "Optimized (100 Trials) 💰", 
-            "Original (Bypassed Risk)", 
-            "Hybrid (Enhanced Risk)",
-            "Enhanced (Full Risk)",
+            "🏆 Trial #100 (91.2% WR, 6356% Return) - NEW!",
+            "🎯 Trial #74 (86.4% WR, 286% Return)",
+            "🔒 Leak-Free Validation",
             "Custom Path"
         ],
-        index=0  # Default to Final Optimal
+        index=0  # Default to Trial #100
     )
     
     # Set directory based on selection
-    if result_type == "🏆 Final Optimal (86.6% WR, 7988% Return, 15.2% DD)":
-        default_dir = str(base / "results/final_optimal_walkforward")
-    elif result_type == "Win-Rate Optimized 🎯":
-        default_dir = str(base / "results/hybrid_winrate_optimization/final_hybrid_winrate_backtest")
-    elif result_type == "Optimized (100 Trials) 💰":
-        default_dir = str(base / "results/final_optimized_backtest")
-    elif result_type == "Original (Bypassed Risk)":
-        default_dir = str(base / "results/2024_backtest/walkforward_cql_all_constraints_bypassed")
-    elif result_type == "Hybrid (Enhanced Risk)":
-        default_dir = str(base / "results/hybrid_backtest")
-    elif result_type == "Enhanced (Full Risk)":
-        default_dir = str(base / "results/enhanced_backtest")
+    if result_type == "🏆 Trial #100 (91.2% WR, 6356% Return) - NEW!":
+        default_dir = str(base / "results/trial_100_walkforward")
+    elif result_type == "🎯 Trial #74 (86.4% WR, 286% Return)":
+        default_dir = str(base / "results/walkforward_2023_backtest_trial74")
+    elif result_type == "🔒 Leak-Free Validation":
+        default_dir = str(base / "results/walkforward_2023_leakfree")
     else:  # Custom Path
         default_dir = str(base / "results")
     
@@ -61,7 +52,7 @@ with st.sidebar:
     st.subheader("🧠 IQL Training Results") 
     iql_dir = st.text_input(
         "IQL Results Directory",
-        str(base / "final_iql_training_2023")
+        str(base / "iql_out/2023_training_2022models")
     )
     
     # Refresh button
@@ -70,53 +61,38 @@ with st.sidebar:
 # Helper functions
 @st.cache_data
 def load_walkforward_data(directory):
-    """Load walkforward backtest results."""
+    """Load walkforward backtest results - flexible file detection."""
     dir_path = Path(directory)
     try:
-        # Try different file naming conventions
-        summary_files = [
-            "optimal_walkforward_summary.json",      # Final Optimal results
-            "winrate_optimized_summary.json",
-            "optimized_walkforward_summary.json",
-            "walkforward_summary.json",
-            "hybrid_walkforward_summary.json", 
-            "enhanced_walkforward_summary.json"
-        ]
-        
-        trade_files = [
-            "optimal_walkforward_trades.csv",        # Final Optimal results
-            "winrate_optimized_trades.csv",
-            "optimized_walkforward_trades.csv",
-            "walkforward_trades.csv",
-            "hybrid_walkforward_trades.csv",
-            "enhanced_walkforward_trades.csv"
-        ]
-        
         summary = None
         trades = None
         
-        # Load summary
-        for summary_file in summary_files:
-            summary_path = dir_path / summary_file
-            if summary_path.exists():
-                with open(summary_path, 'r') as f:
-                    summary = json.load(f)
-                st.success(f"Loaded summary from: {summary_file}")
-                break
+        # Find ANY .json file in directory (prefer *summary.json)
+        json_files = list(dir_path.glob('*.json'))
+        if json_files:
+            # Prioritize files with 'summary' in name
+            summary_files = [f for f in json_files if 'summary' in f.name.lower()]
+            json_file = summary_files[0] if summary_files else json_files[0]
+            
+            with open(json_file, 'r') as f:
+                summary = json.load(f)
+            st.success(f"✅ Loaded summary: {json_file.name}")
+        else:
+            st.error(f"❌ No .json files found in {directory}")
         
-        # Load trades
-        for trade_file in trade_files:
-            trade_path = dir_path / trade_file
-            if trade_path.exists():
-                trades = pd.read_csv(trade_path)
-                trades['date'] = pd.to_datetime(trades['date'])
-                st.success(f"Loaded trades from: {trade_file}")
-                break
-                
-        if summary is None:
-            st.error(f"No summary file found in {directory}")
-        if trades is None:
-            st.error(f"No trades file found in {directory}")
+        # Find ANY .csv file in directory (prefer *trades.csv)
+        csv_files = list(dir_path.glob('*.csv'))
+        if csv_files:
+            # Prioritize files with 'trade' in name
+            trade_files = [f for f in csv_files if 'trade' in f.name.lower()]
+            csv_file = trade_files[0] if trade_files else csv_files[0]
+            
+            trades = pd.read_csv(csv_file)
+            if 'date' in trades.columns:
+                trades['date'] = pd.to_datetime(trades['date'], errors='coerce')
+            st.success(f"✅ Loaded trades: {csv_file.name}")
+        else:
+            st.error(f"❌ No .csv files found in {directory}")
         
         return summary, trades
     except Exception as e:
@@ -125,32 +101,38 @@ def load_walkforward_data(directory):
 
 @st.cache_data 
 def load_iql_data(directory):
-    """Load IQL training and inference results."""
+    """Load IQL training and inference results - flexible file detection."""
     dir_path = Path(directory)
     try:
         data = {}
         
-        # Load policy metadata
-        with open(dir_path / "policy_meta.json", 'r') as f:
-            data['meta'] = json.load(f)
+        # Load policy metadata (look for any *meta*.json)
+        meta_files = list(dir_path.glob('*meta*.json'))
+        if meta_files:
+            with open(meta_files[0], 'r') as f:
+                data['meta'] = json.load(f)
+            st.info(f"Loaded IQL metadata: {meta_files[0].name}")
         
-        # Load decision table
-        if (dir_path / "decision_table.csv").exists():
-            data['decisions'] = pd.read_csv(dir_path / "decision_table.csv")
-            data['decisions']['date'] = pd.to_datetime(data['decisions']['date'])
+        # Load decision table (look for any decision*.csv or just .csv files)
+        decision_files = list(dir_path.glob('*decision*.csv'))
+        if not decision_files:
+            decision_files = list(dir_path.glob('*.csv'))
         
-        # Load inference outputs
+        if decision_files:
+            data['decisions'] = pd.read_csv(decision_files[0])
+            if 'date' in data['decisions'].columns:
+                data['decisions']['date'] = pd.to_datetime(data['decisions']['date'], errors='coerce')
+            st.info(f"Loaded decision table: {decision_files[0].name}")
+        
+        # Load inference outputs (scan for .csv files)
         inference_dir = dir_path / "inference_outputs"
         if inference_dir.exists():
-            files = ['cqf_predictions.csv', 'stress_metrics.csv', 'trade_recommendations.csv', 
-                    'ranker_candidates.csv', 'stress_metrics_llm.csv']
-            
-            for file in files:
-                if (inference_dir / file).exists():
-                    df = pd.read_csv(inference_dir / file)
-                    if 'date' in df.columns:
-                        df['date'] = pd.to_datetime(df['date'], errors='coerce')
-                    data[file.replace('.csv', '')] = df
+            for csv_file in inference_dir.glob('*.csv'):
+                df = pd.read_csv(csv_file)
+                if 'date' in df.columns:
+                    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                data[csv_file.stem] = df  # Use filename without extension as key
+                st.info(f"Loaded inference: {csv_file.name}")
         
         return data
     except Exception as e:
@@ -177,9 +159,12 @@ if summary is None:
     st.stop()
 
 # Performance Overview
-if result_type == "🏆 Final Optimal (86.6% WR, 7988% Return, 15.2% DD)":
-    st.header("🏆 WORLD-CLASS PERFORMANCE - Final Optimal Results")
-    st.success("🎯 **ACHIEVEMENT**: 86.6% win rate, 7,988.9% returns, 15.2% max drawdown - Calmar Ratio: 524.6")
+if result_type == "🏆 Trial #100 (91.2% WR, 6356% Return) - NEW!":
+    st.header("🏆 EXCELLENT PERFORMANCE - Trial #100 Results")
+    st.success("🎯 **NEW RECORD**: 91.2% win rate, 6,356% returns, 26.6% drawdown - Calmar Ratio: 239")
+elif result_type == "🎯 Trial #74 (86.4% WR, 286% Return)":
+    st.header("🥇 GREAT PERFORMANCE - Trial #74 Results")
+    st.success("🎯 **ACHIEVEMENT**: 86.4% win rate, 286% returns, 47.4% drawdown")
     
     # Special display for final optimal results
     col1, col2, col3, col4, col5, col6 = st.columns(6)
