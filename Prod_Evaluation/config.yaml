@@ -1,0 +1,125 @@
+# config.yaml
+# Data source configuration:
+# SM_CHANNEL_TRAIN environment variable is used for loading data.
+# If SM_CHANNEL_TRAIN is not set, a fallback S3 path ("s3://yel-spy-etled-4.0/processed_data/") will be used.
+data_source:
+  s3_data_path: "s3://yel-spy-etled-4.0/processed_data/year=2008/" # Added S3 data path here
+
+train_start_date: "2010-01-01"  
+train_end_date: "2010-09-30"    
+validation_start_date: "2010-10-01" 
+validation_end_date: "2010-12-31"  
+
+model_type: "hybrid"  # Options: "hybrid" or "lstm"
+lstm_units: 500
+transformer_heads: 4
+transformer_layers: 2
+dense_units: 32
+learning_rate: 0.0001329291894316216
+batch_size: 16
+lookback_window: 10  # Number of past time steps for models that use sequential data
+
+gamma: 0.9941207163345817
+ppo_clip_range: 0.2197316968394073
+ppo_epochs: 10
+entropy_coef: 0.015702970884055395
+vix_sensitivity: 0.5
+max_holding_days: 10
+# Updated reward configuration
+reward_bonus_threshold: 0.024646688973455958  # 5% ROI for bonus
+reward_exceptional_threshold: 0.1799264218662403  # 10% ROI for exceptional bonus
+reward_holding_bonus: 0.003005575058716044  # Small bonus per day for holding profitable positions
+loss_penalty_factor: 2.416145155592091
+# New reward parameters
+transaction_cost: 0.0005308767414437036  # 0.1% transaction cost (commissions, slippage)
+min_profitable_threshold: 0.019548647782429915  # 1% minimum ROI to be considered worthwhile
+time_decay_factor: 0.9749198376720379  # Decay factor for time value of money
+large_loss_threshold: -0.08513626225252068  # -5% threshold for larger loss penalties
+large_loss_extra_penalty: 1.1727299868828402  # Additional multiplier for large losses
+
+total_timesteps: 100000  # Total timesteps for training (formerly num_episodes)
+checkpoint_frequency: 500  # Save model every N checkpoints
+num_envs: 4               # Number of parallel environments
+# output_dir: "/opt/ml/model" # SageMaker location
+# output_dir is now set programmatically in the scripts to use the absolute path to the model directory
+
+device: "cpu"  # Changed to cpu since we're running on ml.m5.large without GPU
+
+# Capital constraints for realistic trading
+starting_capital: 10000.0  # Initial account balance ($10,000)
+max_position_value: 0.5    # Maximum 50% of capital per position
+min_trade_size: 0.05       # Minimum 5% of capital per position
+
+# Add this section with the list of columns that represent the Greeks and any other engineered features.
+greeks_cols:
+  - delta
+  - gamma
+  - theta
+  - vega
+  - rho
+  - implied_volatility
+
+# Preprocessing configuration for utils.py
+min_price_threshold: 0.05
+use_tsfresh: true
+numerical_cols_to_scale:
+  - strike
+  - last
+  - bid
+  - ask
+  - volume
+  - open_interest
+  - implied_volatility
+  - delta
+  - gamma
+  - theta
+  - vega
+  - rho
+  - days_to_exp
+  - spy_d_close
+  - spy_d_SMA_50
+  - spy_d_RSI
+  - spy_d_MACD_Hist
+  - vix_d_close
+  - moneyness
+  - relative_spread
+  - bid_ask_spread
+  - ofi
+  - price_change_1d
+  - iv_change_1d
+  - zero_day_premium
+  - option_volume_oi_ratio
+  - mispricing_ratio
+  - risk_adjusted_signal
+  - iv_vix_ratio
+  - spy_momentum
+
+# Optimized Behavior Policy Parameters (from Optuna Trial 93: 18.79 objective score, 100-trial optimization)
+behavior_policy:
+  # Strategy mix weights (must sum to 1.0)
+  prob_weight: 0.4434            # Best probability of profit strategy weight  
+  exp_weight: 0.2433             # Best expected return strategy weight
+  expl_weight: 0.3134            # Random exploration weight (1.0 - prob_weight - exp_weight)
+  
+  # Decision thresholds for position sizing
+  prob_threshold: 0.5435         # Probability threshold for full position size
+  exp_threshold: 0.0863          # Expected return threshold for full position size
+  
+  # Exploration slot preferences (must sum to 1.0)
+  exploration_slot_probs:
+    slot1: 0.2781                # Slot 1 preference in exploration
+    slot2: 0.2425                # Slot 2 preference in exploration  
+    slot3: 0.2575                # Slot 3 preference in exploration
+    slot4: 0.1721                # Slot 4 preference in exploration
+    slot5: 0.0498                # Slot 5 preference (remaining)
+  
+  # Position sizing ratios
+  size_ratio_conservative: 0.3001 # Conservative position size multiplier
+  size_ratio_aggressive: 0.9841  # Aggressive position size multiplier
+  
+  # Original hardcoded values (for reference/comparison)
+  # prob_weight_original: 0.60
+  # exp_weight_original: 0.25  
+  # expl_weight_original: 0.15
+  # prob_threshold_original: 0.60
+  # exp_threshold_original: 0.10

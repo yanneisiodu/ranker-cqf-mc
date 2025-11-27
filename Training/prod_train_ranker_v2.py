@@ -16,39 +16,62 @@ from functools import partial
 from sklearn.impute import SimpleImputer
 from datetime import datetime
 import argparse
+import sys
+from pathlib import Path
+
+# Add Training2 to path to import RegimeDetector
+sys.path.append(str(Path(__file__).resolve().parent.parent / "Training2"))
+try:
+    from regime_detector import RegimeDetector
+except ImportError:
+    RegimeDetector = None
 
 from utils import load_config, preprocess_data
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 CONFIG_FILE = "./config.yaml"
-MODEL_OUTPUT_PATH = "./model_output/"
+MODEL_OUTPUT_PATH = "./model_output_v2/"
 TARGET_LOOKAHEAD_DAYS = 5
 N_CV_SPLITS = 5
-OPTUNA_N_TRIALS = 100
+OPTUNA_N_TRIALS = 50  # Reduced for speed, increase for prod
 OPTUNA_TIMEOUT = None
 NDCG_K = 20
 PURGE_DAYS = TARGET_LOOKAHEAD_DAYS
 
+# Expanded Feature List (Ranker 2.0)
 NUMERICAL_FEATURES = [
-    'days_to_exp', 'strike', 'last', 'bid', 'ask', 'volume', 'open_interest',
-    'implied_volatility', 'delta', 'gamma', 'theta', 'vega', 'rho',
+    # Greeks
+    'delta', 'gamma', 'theta', 'vega', 'rho',
+    'days_to_exp', 'strike', 'implied_volatility',
+    'moneyness',
+    
+    # Market Context
     'spy_d_close', 'spy_d_SMA_50', 'spy_d_RSI', 'spy_d_MACD_Hist',
-    'vix_d_close', 'moneyness', 'relative_spread', 'bid_ask_spread',
-    'ofi', 'price_change_1d', 'iv_change_1d', 'zero_day_premium',
-    'option_volume_oi_ratio', 'mispricing_ratio', 'risk_adjusted_signal',
-    'iv_vix_ratio', 'spy_momentum', 'price__mean', 'price__standard_deviation',
+    'vix_d_close', 'spy_momentum',
+    
+    # Microstructure
+    'relative_spread', 'bid_ask_spread', 'volume', 'open_interest',
+    'option_volume_oi_ratio', 'ofi',
+    
+    # Derived / Interactions (New)
+    'delta_gamma', 'delta_iv', 'gamma_theta', 'vix_momentum',
+    'price_change_1d', 'iv_change_1d',
+
+    # Regime Features (New)
+    'regime_vix_trend', 'regime_vol_of_vol'
 ]
+
 CATEGORICAL_FEATURES = ['type']
 
 FIXED_PARAMS = {
-    'learning_rate': 0.06326509803163745,
-    'max_depth': 3,
-    'subsample': 0.7822444357631866,
-    'colsample_bytree': 0.7333407813790271,
-    'gamma': 0.14988133139247198,
-    'reg_alpha': 1.0693728241301906e-06,
-    'reg_lambda': 1.0903140623130713e-07,
+    'learning_rate': 0.05,
+    'max_depth': 6,  # Deeper trees for interactions
+    'subsample': 0.8,
+    'colsample_bytree': 0.8,
+    'gamma': 0.1,
+    'reg_alpha': 1.0,
+    'reg_lambda': 1.0,
 }
 
 class PurgedTimeSeriesSplit:
@@ -164,7 +187,7 @@ def objective_rank(trial, X, y, dates, numerical_features, categorical_features,
         'n_estimators': 1000,
         'early_stopping_rounds': 50,
         'learning_rate': trial.suggest_float('learning_rate', 1e-3, 0.1, log=True),
-        'max_depth': trial.suggest_int('max_depth', 3, 10),
+        'max_depth': trial.suggest_int('max_depth', 4, 10),
         'subsample': trial.suggest_float('subsample', 0.6, 1.0),
         'colsample_bytree': trial.suggest_float('colsample_bytree', 0.4, 1.0),
         'gamma': trial.suggest_float('gamma', 1e-9, 1.0, log=True),
@@ -217,19 +240,90 @@ def objective_rank(trial, X, y, dates, numerical_features, categorical_features,
     return 1.0 - score if not np.isnan(score) else 10.0
 
 
-def bin_relevance(df, target_col, output_dir, start_year, end_year, timestamp):
-    quantiles = df[target_col].quantile([0.25, 0.5, 0.75])
-    q1, q2, q3 = quantiles[0.25], quantiles[0.5], quantiles[0.75]
-    conditions = [
-        df[target_col] <= q1,
-        (df[target_col] > q1) & (df[target_col] <= q2),
-        (df[target_col] > q2) & (df[target_col] <= q3),
-        df[target_col] > q3,
-    ]
-    df['target_relevance_int'] = np.select(conditions, [0, 1, 2, 3], default=0)
-    edges = [-np.inf, q1, q2, q3, np.inf]
+def bin_relevance_v2(df, target_col, output_dir, start_year, end_year, timestamp):
+    """
+    Ranker 2.0 Target Engineering:
+    Use Decile Binning (0-9) instead of Quartiles (0-3).
+    This gives the model much finer resolution to distinguish 'Good' from 'Great'.
+    """
+    # Use qcut for deciles
+    try:
+        df['target_relevance_int'] = pd.qcut(df[target_col], 10, labels=False, duplicates='drop')
+    except ValueError:
+        # Fallback if not enough unique values
+        logging.warning("Not enough unique values for deciles, falling back to quartiles")
+        df['target_relevance_int'] = pd.qcut(df[target_col], 4, labels=False, duplicates='drop')
+    
+    # Save edges for inference
+    # Note: qcut doesn't return edges easily with labels=False, so we compute them manually
+    _, edges = pd.qcut(df[target_col], 10, retbins=True, duplicates='drop')
+    
     os.makedirs(output_dir, exist_ok=True)
-    joblib.dump(edges, os.path.join(output_dir, f"sharpe_qcut_edges_{start_year}_{end_year}_{timestamp}.pkl"))
+    joblib.dump(edges, os.path.join(output_dir, f"sharpe_decile_edges_{start_year}_{end_year}_{timestamp}.pkl"))
+    return df
+
+
+def add_interaction_features(df):
+    """Ranker 2.0 Feature Engineering: Interactions"""
+    # 1. Delta * Gamma (Gamma Scalping Potential)
+    if 'delta' in df.columns and 'gamma' in df.columns:
+        df['delta_gamma'] = df['delta'] * df['gamma']
+        
+    # 2. Delta * IV (Vol Sensitivity)
+    if 'delta' in df.columns and 'implied_volatility' in df.columns:
+        df['delta_iv'] = df['delta'] * df['implied_volatility']
+        
+    # 3. Gamma * Theta (Time/Vol Tradeoff)
+    if 'gamma' in df.columns and 'theta' in df.columns:
+        df['gamma_theta'] = df['gamma'] * df['theta']
+        
+    # 4. VIX Momentum
+    if 'vix_d_close' in df.columns:
+        df['vix_momentum'] = df['vix_d_close'].pct_change(5).fillna(0)
+        
+    return df
+
+
+def add_regime_features(df, train_mask=None):
+    """
+    Ranker 2.0 Feature Engineering: Regimes
+
+    Args:
+        df: Full dataframe
+        train_mask: Boolean mask or indices for training data (to prevent leakage)
+                   If None, uses descriptive features only (no GMM fitting)
+
+    Returns:
+        df with regime features added
+    """
+    if RegimeDetector is None:
+        logging.warning("RegimeDetector not available, skipping regime features")
+        return df
+
+    try:
+        detector = RegimeDetector(n_components=3)
+
+        # Strategy: Use descriptive features only (vix_trend, vol_of_vol)
+        # These are computed from historical VIX data without fitting GMM on future data
+        # This avoids leakage while still capturing regime information
+        regime_df = detector._prepare_features(df)
+
+        # Add regime features
+        df['regime_vix_trend'] = regime_df['vix_trend']
+        df['regime_vol_of_vol'] = regime_df['vol_of_vol']
+
+        # Fill NaNs with sensible defaults
+        df['regime_vix_trend'] = df['regime_vix_trend'].fillna(1.0)  # Neutral trend
+        df['regime_vol_of_vol'] = df['regime_vol_of_vol'].fillna(0.0)  # Low vol-of-vol
+
+        logging.info("Added regime features: regime_vix_trend, regime_vol_of_vol")
+
+    except Exception as e:
+        logging.warning(f"Failed to add regime features: {e}")
+        # Add placeholder columns to prevent feature mismatch errors
+        df['regime_vix_trend'] = 1.0
+        df['regime_vol_of_vol'] = 0.0
+
     return df
 
 
@@ -254,8 +348,14 @@ def train_ranker(data_files, config_file, trials, start_year, end_year, timestam
     else:
         df_processed['iv_change_1d'] = 0
 
+    # Ranker 2.0: Add Features
+    df_processed = add_interaction_features(df_processed)
+    df_processed = add_regime_features(df_processed)
+
     df_target = calculate_target(df_processed, TARGET_LOOKAHEAD_DAYS)
-    df_target = bin_relevance(df_target, 'target_5d_sharpe', MODEL_OUTPUT_PATH, start_year, end_year, timestamp)
+    
+    # Ranker 2.0: Decile Binning
+    df_target = bin_relevance_v2(df_target, 'target_5d_sharpe', MODEL_OUTPUT_PATH, start_year, end_year, timestamp)
 
     feature_cols = [f for f in NUMERICAL_FEATURES + CATEGORICAL_FEATURES if f in df_target.columns]
     X = df_target[['date'] + feature_cols].copy()
@@ -290,7 +390,7 @@ def train_ranker(data_files, config_file, trials, start_year, end_year, timestam
         'tree_method': 'hist',
         'seed': 42,
         'n_jobs': -1,
-        'n_estimators': 1500,
+        'n_estimators': 2000,  # Increased for finer resolution
         **best_params,
     }
     final_params.pop('early_stopping_rounds', None)
@@ -311,14 +411,14 @@ def train_ranker(data_files, config_file, trials, start_year, end_year, timestam
     os.makedirs(MODEL_OUTPUT_PATH, exist_ok=True)
     features_path = os.path.join(
         MODEL_OUTPUT_PATH,
-        f"xgb_feature_names_{start_year}_{end_year}_{'optuna' if trials > 0 else 'fixed'}_{timestamp}.pkl"
+        f"xgb_feature_names_v2_{start_year}_{end_year}_{'optuna' if trials > 0 else 'fixed'}_{timestamp}.pkl"
     )
     joblib.dump(feature_cols, features_path)
     logging.info(f"Saved feature list to {features_path}")
 
     model_path = os.path.join(
         MODEL_OUTPUT_PATH,
-        f"xgboost_ranker2_{start_year}_{end_year}_{'optuna' if trials > 0 else 'fixed'}_{timestamp}.joblib"
+        f"xgboost_ranker_v2_{start_year}_{end_year}_{'optuna' if trials > 0 else 'fixed'}_{timestamp}.joblib"
     )
     joblib.dump(pipeline, model_path)
     logging.info(f"Saved ranker pipeline to {model_path}")
@@ -328,14 +428,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--start-year", type=int, default=2019)
     parser.add_argument("--end-year", type=int, default=2023)
-    parser.add_argument("--trials", type=int, default=100)
+    parser.add_argument("--trials", type=int, default=50)
     parser.add_argument("--config", default=CONFIG_FILE)
     args = parser.parse_args()
 
     if args.start_year == 2019 and args.end_year == 2023:
-        data_files = ["../Data/train_2019_2023.csv"]  # Combined data if available
+        data_files = ["../Data/train_2019_2023.csv"]
     else:
-        # Updated to point to /Data directory (capital D)
         data_files = [f"../Data/year_{year}_data.csv" for year in range(args.start_year, args.end_year + 1)]
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

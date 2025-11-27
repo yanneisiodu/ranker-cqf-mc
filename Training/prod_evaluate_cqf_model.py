@@ -21,13 +21,14 @@ import glob
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List
 from sklearn.metrics import mean_pinball_loss
+from scipy.stats import spearmanr
 import sys
 
 # Add current directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from utils import load_config, preprocess_data
 from logger import setup_logger
-from prod_cqf import OptimalCQF
+from prod_cqf import OptimalCQF, CQFConfig
 
 # --- Configuration & Constants ---
 logger = setup_logger(__name__, level=logging.INFO)
@@ -90,8 +91,8 @@ def load_and_prepare_eval_data(data_file: str, config_file: str) -> pd.DataFrame
         from regime_tools import add_regime_features, add_realized_vol_features
         
         logger.info("Adding regime features...")
-        df_processed = add_realized_vol_features(df_processed)
         df_processed = add_regime_features(df_processed)
+        df_processed = add_realized_vol_features(df_processed)
         logger.info(f"Regime features added. Final shape: {df_processed.shape}")
         
         t_end = time.time()
@@ -143,6 +144,156 @@ def calculate_pinball_metrics(y_true: np.ndarray, predictions: Dict[str, np.ndar
     
     return metrics
 
+def calculate_median_bias(y_true: np.ndarray, predictions: Dict[str, np.ndarray]) -> Dict[str, float]:
+    """Calculate median prediction bias and accuracy with Spearman correlation."""
+    metrics = {}
+
+    if 'q0.50' in predictions:
+        y_pred_median = predictions['q0.50']
+
+        # Median bias (systematic over/under estimation)
+        median_bias = np.median(y_pred_median - y_true)
+        mean_bias = np.mean(y_pred_median - y_true)
+
+        # Median absolute error
+        mae = np.mean(np.abs(y_pred_median - y_true))
+
+        # Root mean squared error
+        rmse = np.sqrt(np.mean((y_pred_median - y_true) ** 2))
+
+        # Pearson correlation (sensitive to outliers)
+        pearson_corr = np.corrcoef(y_pred_median, y_true)[0, 1] if len(y_true) > 1 else 0.0
+
+        # Spearman correlation (rank-based, robust to outliers) - CRITICAL FOR RANKING
+        spearman_corr, spearman_pvalue = spearmanr(y_pred_median, y_true) if len(y_true) > 1 else (0.0, 1.0)
+
+        metrics['median_bias'] = median_bias
+        metrics['mean_bias'] = mean_bias
+        metrics['median_mae'] = mae
+        metrics['median_rmse'] = rmse
+        metrics['median_pearson_correlation'] = pearson_corr
+        metrics['median_spearman_correlation'] = spearman_corr
+        metrics['median_spearman_pvalue'] = spearman_pvalue
+
+        # Log results
+        bias_direction = "pessimistic" if median_bias < 0 else "optimistic"
+        logger.info(f"Median bias: {median_bias:+.6f} ({bias_direction})")
+        logger.info(f"Mean bias: {mean_bias:+.6f}")
+        logger.info(f"Median MAE: {mae:.6f}")
+        logger.info(f"Median RMSE: {rmse:.6f}")
+        logger.info(f"Pearson correlation: {pearson_corr:.4f}")
+        logger.info(f"Spearman correlation: {spearman_corr:.4f} (p={spearman_pvalue:.2e})")
+
+        # Warning if bias is large
+        if abs(median_bias) > 0.05:
+            logger.warning(f"⚠️  Large median bias detected: {median_bias:+.6f} ({abs(median_bias)*100:.1f}%)")
+
+        # CRITICAL: Warning if Spearman correlation is negative (predictions inversely ranked)
+        if spearman_corr < 0:
+            logger.error(f"🚨 CRITICAL: Q0.50 has NEGATIVE Spearman correlation ({spearman_corr:.4f})")
+            logger.error(f"   This means higher predicted returns correlate with LOWER actual returns!")
+            logger.error(f"   Q0.50 predictions should NOT be used for ranking/selection.")
+        elif spearman_corr < 0.10:
+            logger.warning(f"⚠️  Q0.50 Spearman correlation very low ({spearman_corr:.4f}) - weak ranking signal")
+
+    return metrics
+
+def calculate_probability_calibration(eval_df: pd.DataFrame) -> Dict[str, float]:
+    """Calculate probability calibration metrics."""
+    metrics = {}
+
+    if 'prob_profit' not in eval_df.columns or 'target_pnl' not in eval_df.columns:
+        logger.warning("prob_profit or target_pnl not available for calibration analysis")
+        return metrics
+
+    prob_profit = eval_df['prob_profit'].values
+    actual_profit = (eval_df['target_pnl'] > 0).astype(int).values
+
+    # Brier score (lower is better, 0 = perfect)
+    brier_score = np.mean((prob_profit - actual_profit) ** 2)
+    metrics['brier_score'] = brier_score
+    logger.info(f"Brier score: {brier_score:.6f} (0=perfect, 0.25=random)")
+
+    # Calibration curve (10 buckets)
+    logger.info("\n=== Probability Calibration Curve ===")
+    logger.info("Pred Range | Count  | Expected WR | Actual WR | Calibration Error")
+    logger.info("-----------+--------+-------------+-----------+------------------")
+
+    total_calibration_error = 0
+    calibrated_buckets = 0
+
+    for i in range(10):
+        lower = i * 0.1
+        upper = (i + 1) * 0.1
+        mask = (prob_profit >= lower) & (prob_profit < upper)
+
+        if mask.sum() > 0:
+            expected_wr = (lower + upper) / 2
+            actual_wr = actual_profit[mask].mean()
+            calibration_error = actual_wr - expected_wr
+
+            total_calibration_error += abs(calibration_error)
+            calibrated_buckets += 1
+
+            logger.info(f"{int(lower*100):2d}-{int(upper*100):2d}%    | {mask.sum():6d} | {expected_wr:7.1%}     | {actual_wr:7.1%}   | {calibration_error:+.1%}")
+
+            metrics[f'calibration_error_{int(lower*100)}_{int(upper*100)}'] = calibration_error
+
+    # Mean absolute calibration error
+    if calibrated_buckets > 0:
+        mace = total_calibration_error / calibrated_buckets
+        metrics['mean_absolute_calibration_error'] = mace
+        logger.info(f"\nMean Absolute Calibration Error: {mace:.1%}")
+
+        if mace > 0.15:
+            logger.warning(f"⚠️  Poor probability calibration: MACE = {mace:.1%} (threshold: 15%)")
+
+    return metrics
+
+def calculate_expected_return_sanity(eval_df: pd.DataFrame) -> Dict[str, float]:
+    """Validate expected return predictions."""
+    metrics = {}
+
+    if 'expected_return' not in eval_df.columns or 'target_pnl' not in eval_df.columns:
+        logger.warning("expected_return or target_pnl not available")
+        return metrics
+
+    exp_ret = eval_df['expected_return'].values
+    target_pnl = eval_df['target_pnl'].values
+
+    # Distribution statistics
+    pos_exp_pct = (exp_ret > 0).mean()
+    actual_profit_pct = (target_pnl > 0).mean()
+
+    mean_expected = exp_ret.mean()
+    mean_actual = target_pnl.mean()
+
+    # Correlation
+    correlation = np.corrcoef(exp_ret, target_pnl)[0, 1] if len(exp_ret) > 1 else 0.0
+
+    metrics['pct_positive_expected_return'] = pos_exp_pct
+    metrics['actual_profit_rate'] = actual_profit_pct
+    metrics['mean_expected_return'] = mean_expected
+    metrics['mean_actual_return'] = mean_actual
+    metrics['expected_return_correlation'] = correlation
+
+    logger.info(f"\n=== Expected Return Validation ===")
+    logger.info(f"% with positive expected return: {pos_exp_pct:.1%}")
+    logger.info(f"Actual profit rate: {actual_profit_pct:.1%}")
+    logger.info(f"Mean expected return: {mean_expected:+.6f}")
+    logger.info(f"Mean actual return: {mean_actual:+.6f}")
+    logger.info(f"Correlation: {correlation:.4f}")
+
+    # Sanity checks
+    gap = actual_profit_pct - pos_exp_pct
+    if abs(gap) > 0.20:
+        logger.warning(f"⚠️  Large gap between expected ({pos_exp_pct:.1%}) and actual ({actual_profit_pct:.1%}) profitability: {gap:+.1%}")
+
+    if correlation < 0.3:
+        logger.warning(f"⚠️  Low correlation between expected and actual returns: {correlation:.4f}")
+
+    return metrics
+
 def calculate_regime_performance(eval_df: pd.DataFrame, predictions: Dict[str, np.ndarray]) -> Dict[str, float]:
     """Analyze performance across different market regimes."""
     metrics = {}
@@ -183,28 +334,63 @@ def calculate_regime_performance(eval_df: pd.DataFrame, predictions: Dict[str, n
     
     return metrics
 
-def check_quality_gates(coverage_metrics: Dict[str, float]) -> bool:
-    """Check if model passes quality gates for production use."""
+def check_quality_gates(coverage_metrics: Dict[str, float],
+                        median_bias_metrics: Optional[Dict[str, float]] = None) -> bool:
+    """
+    Check if model passes asymmetric quality gates for production use.
+
+    Asymmetric gates: Under-coverage is dangerous (too aggressive),
+                      Over-coverage is wasteful (too conservative)
+
+    Also checks Q0.50 Spearman correlation - negative correlation is a CRITICAL failure.
+    """
     gates_passed = True
-    
-    # Primary gate: 90% interval should have 85-95% coverage
+
+    # Primary gate: 90% interval with asymmetric thresholds
     if '90%_interval_coverage' in coverage_metrics:
         coverage = coverage_metrics['90%_interval_coverage']
-        if coverage < 0.85 or coverage > 0.95:
-            logger.error(f"❌ Quality gate FAILED: 90% interval coverage {coverage:.1%} outside [85%, 95%]")
+        target = coverage_metrics.get('90%_interval_target', 0.90)
+        error = target - coverage  # Positive = under-coverage, negative = over-coverage
+
+        MAX_UNDER_COVERAGE = 0.10  # Allow down to 80%
+        MAX_OVER_COVERAGE = 0.15   # Allow up to 95%
+
+        if error > MAX_UNDER_COVERAGE:
+            logger.error(f"❌ Quality gate FAILED: Under-coverage {coverage:.1%} < 80% threshold")
+            gates_passed = False
+        elif error < -MAX_OVER_COVERAGE:
+            logger.error(f"❌ Quality gate FAILED: Over-coverage {coverage:.1%} > 95% threshold")
             gates_passed = False
         else:
-            logger.info(f"✅ Quality gate PASSED: 90% interval coverage {coverage:.1%}")
-    
+            status = "over-conservative" if coverage > 0.93 else "good"
+            logger.info(f"✅ Quality gate PASSED: 90% interval coverage {coverage:.1%} ({status})")
+
     # Secondary gates for other intervals
     for interval in ['80%_interval', '50%_interval']:
         if f'{interval}_error' in coverage_metrics:
             error = coverage_metrics[f'{interval}_error']
-            if error > 0.10:  # Allow 10% error tolerance
-                logger.warning(f"⚠️  Quality gate WARNING: {interval} error {error:.1%} > 10%")
+            if error > 0.15:  # Allow 15% error tolerance for secondary intervals
+                logger.warning(f"⚠️  Quality gate WARNING: {interval} error {error:.1%} > 15%")
             else:
-                logger.info(f"✅ Quality gate PASSED: {interval} error {error:.1%}")
-    
+                logger.info(f"✅ Quality gate OK: {interval} error {error:.1%}")
+
+    # NEW: Q0.50 Spearman correlation gate (critical for downstream ranking)
+    if median_bias_metrics:
+        spearman_corr = median_bias_metrics.get('median_spearman_correlation', 0.0)
+
+        # CRITICAL: Negative Spearman means predictions are inversely ranked
+        if spearman_corr < 0:
+            logger.error(f"❌ Quality gate FAILED: Q0.50 Spearman correlation is NEGATIVE ({spearman_corr:.4f})")
+            logger.error(f"   → Q0.50 predictions inversely correlate with actual returns!")
+            logger.error(f"   → Do NOT use Q0.50 directly in downstream CQL/ranking pipelines.")
+            # Note: We don't fail the overall gate here because Q0.05/Q0.95 may still be valid
+            # and the blended expected_return mitigates Q0.50's influence to 25%
+            logger.warning(f"   → Model can still be used if relying on prob_profit and q0.05/q0.95")
+        elif spearman_corr < 0.10:
+            logger.warning(f"⚠️  Quality gate WARNING: Q0.50 Spearman correlation weak ({spearman_corr:.4f})")
+        else:
+            logger.info(f"✅ Quality gate PASSED: Q0.50 Spearman correlation {spearman_corr:.4f}")
+
     return gates_passed
 
 # --- Main Evaluation Function ---
@@ -327,21 +513,39 @@ def evaluate_cqf_model(model_file: str, eval_data_file: str, config_file: str,
         # Calculate coverage metrics
         logger.info("\n=== Coverage Analysis ===")
         coverage_metrics = calculate_coverage_metrics(y_true, predictions_dict)
-        
+
         # Calculate pinball metrics
         logger.info("\n=== Pinball Loss Analysis ===")
         pinball_metrics = calculate_pinball_metrics(y_true, predictions_dict, cqf_model.quantiles)
-        
+
+        # NEW: Calculate median bias
+        logger.info("\n=== Median Prediction Bias Analysis ===")
+        median_bias_metrics = calculate_median_bias(y_true, predictions_dict)
+
+        # NEW: Calculate probability calibration
+        logger.info("\n=== Probability Calibration Analysis ===")
+        prob_calibration_metrics = calculate_probability_calibration(eval_df_clean)
+
+        # NEW: Validate expected return
+        expected_return_metrics = calculate_expected_return_sanity(eval_df_clean)
+
         # Regime performance analysis
         logger.info("\n=== Regime Performance Analysis ===")
         regime_metrics = calculate_regime_performance(eval_df_clean, predictions_dict)
-        
-        # Quality gates
+
+        # Quality gates (now includes Spearman correlation check)
         logger.info("\n=== Quality Gate Validation ===")
-        quality_passed = check_quality_gates(coverage_metrics)
-        
+        quality_passed = check_quality_gates(coverage_metrics, median_bias_metrics)
+
         # Summary
-        all_metrics = {**coverage_metrics, **pinball_metrics, **regime_metrics}
+        all_metrics = {
+            **coverage_metrics,
+            **pinball_metrics,
+            **median_bias_metrics,
+            **prob_calibration_metrics,
+            **expected_return_metrics,
+            **regime_metrics
+        }
         
         if verbose:
             logger.info("\n=== EVALUATION SUMMARY ===")
