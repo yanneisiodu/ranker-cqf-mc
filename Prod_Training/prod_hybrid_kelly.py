@@ -56,28 +56,31 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class HybridKellyConfig:
-    """Configuration for hybrid Kelly sizer."""
-    # Kelly parameters
-    kelly_fraction: float = 0.25  # Quarter Kelly for safety
+    """Configuration for hybrid Kelly sizer.
 
-    # Position limits (strict risk management)
-    min_position_pct: float = 0.005   # 0.5% minimum
-    max_position_pct: float = 0.05    # 5% maximum per position
-    max_portfolio_risk: float = 0.40  # 40% max total allocation
+    Optimized via Optuna (150 trials) on 2024 data, validated on 2025.
+    """
+    # Kelly parameters - optimized from 0.25 to 0.48
+    kelly_fraction: float = 0.48  # Half Kelly (optimized)
 
-    # Probability thresholds
-    min_prob_to_trade: float = 0.50   # Don't trade if P(win) < 50%
-    high_conviction_threshold: float = 0.60  # Boost size above this
+    # Position limits - optimized for higher returns
+    min_position_pct: float = 0.0125  # 1.25% minimum (optimized)
+    max_position_pct: float = 0.106   # 10.6% maximum per position (optimized)
+    max_portfolio_risk: float = 0.70  # 70% max total allocation (optimized)
+
+    # Probability thresholds - optimized
+    min_prob_to_trade: float = 0.40   # Don't trade if P(win) < 40% (optimized)
+    high_conviction_threshold: float = 0.69  # Boost size above this (optimized)
 
     # Return magnitude thresholds
-    min_expected_return: float = 0.02  # 2% minimum expected return to trade
+    min_expected_return: float = 0.025  # 2.5% minimum expected return (optimized)
 
     # Uncertainty adjustment
-    uncertainty_penalty: float = 1.0  # Scale down by uncertainty
+    uncertainty_penalty: float = 1.07  # Scale down by uncertainty (optimized)
 
     # Win/loss ratio bounds
-    min_win_loss_ratio: float = 0.5   # Don't trade if b < 0.5
-    max_win_loss_ratio: float = 10.0  # Cap b at 10 to avoid extreme bets
+    min_win_loss_ratio: float = 0.39  # Don't trade if b < 0.39 (optimized)
+    max_win_loss_ratio: float = 5.0   # Cap b at 5 to avoid extreme bets (optimized)
 
 
 # =============================================================================

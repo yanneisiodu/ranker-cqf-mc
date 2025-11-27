@@ -1,0 +1,25 @@
+{
+  "best_params": {
+    "kelly_fraction": 0.4817362715849687,
+    "min_position_pct": 0.012477169861205136,
+    "max_position_pct": 0.10566067459277428,
+    "max_portfolio_risk": 0.6997024871619761,
+    "min_prob_to_trade": 0.4000603963406696,
+    "high_conviction_threshold": 0.6917140360268247,
+    "min_expected_return": 0.02466632611190397,
+    "uncertainty_penalty": 1.0725273809338867,
+    "min_win_loss_ratio": 0.3901286616620577,
+    "max_win_loss_ratio": 5.008623346516258
+  },
+  "best_objective": 166493.4361848435,
+  "final_results": {
+    "total_return": 10387.053454389341,
+    "sharpe": 16.70092604210681,
+    "max_drawdown": 0.41923426606281816,
+    "win_rate": 19.303255282695602,
+    "profit_factor": 41.95381555221244,
+    "n_trades": 1751
+  },
+  "objective_type": "balanced",
+  "n_trials": 150
+}
