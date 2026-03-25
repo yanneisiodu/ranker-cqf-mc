@@ -1,0 +1,6 @@
+Python bytecode compilation check:
+PASS
+
+Pytest:
+...                                                                      [100%]
+3 passed in 28.02s

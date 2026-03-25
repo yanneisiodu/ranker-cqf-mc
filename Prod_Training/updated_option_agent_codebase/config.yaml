@@ -1,0 +1,165 @@
+data:
+  horizon_days: 5
+  target_mode: net_long_return   # alternatives: net_long_return, net_delta_hedged_return
+  profit_threshold: 0.00
+  commission_bps: 0.0
+  min_price_threshold: 0.05
+  max_relative_spread: 1.0
+  min_volume: 0
+  min_open_interest: 0
+  drop_zero_dte: false
+
+features:
+  rolling_windows: [5, 20]
+  categorical:
+    - type
+  auto_include_prefixes:
+    - surface_
+    - regime_
+    - news_
+    - filing_
+    - embed_
+    - signal_
+    - aux_
+  numerical:
+    - days_to_exp
+    - strike
+    - last
+    - bid
+    - ask
+    - mid_price
+    - volume
+    - open_interest
+    - implied_volatility
+    - delta
+    - gamma
+    - theta
+    - vega
+    - rho
+    - spy_d_close
+    - spy_d_sma_50
+    - spy_d_rsi
+    - spy_d_macd_hist
+    - vix_d_close
+    - moneyness
+    - relative_spread
+    - bid_ask_spread
+    - liquidity_score
+    - iv_vix_ratio
+    - spy_momentum
+    - price_change_1d
+    - iv_change_1d
+    - mid_roll_mean_5
+    - mid_roll_std_5
+    - mid_roll_mean_20
+    - mid_roll_std_20
+    - iv_roll_mean_5
+    - iv_roll_std_5
+    - volume_roll_mean_5
+    - volume_roll_mean_20
+    - volume_oi_ratio
+    - mispricing_ratio
+    - theta_carry
+    - vega_per_dollar
+    - gamma_per_dollar
+    - time_value_ratio
+    - delta_abs
+    - dist_to_atm
+    - quote_efficiency
+    - mid_price_pct_rank
+    - volume_pct_rank
+    - open_interest_pct_rank
+    - iv_pct_rank
+    - relative_spread_pct_rank
+    - moneyness_pct_rank
+
+ranker:
+  n_splits: 4
+  purge_days: 5
+  min_fold_train_days: 10
+  n_estimators: 300
+  learning_rate: 0.05
+  max_depth: 4
+  subsample: 0.8
+  colsample_bytree: 0.8
+  reg_alpha: 0.1
+  reg_lambda: 1.0
+  top_k_eval: 20
+  relevance_bins: 5
+
+meta_labeler:
+  n_estimators: 300
+  learning_rate: 0.05
+  max_depth: 4
+  subsample: 0.8
+  colsample_bytree: 0.8
+  reg_alpha: 0.1
+  reg_lambda: 1.0
+  calibration_days: 5
+  n_splits: 4
+  purge_days: 5
+
+return_model:
+  n_estimators: 120
+  learning_rate: 0.05
+  max_depth: 3
+  subsample: 0.8
+  calibration_days: 5
+  n_splits: 4
+  purge_days: 5
+
+portfolio:
+  starting_capital: 100000.0
+  kelly_fraction: 0.25
+  min_prob_to_trade: 0.55
+  min_expected_return: 0.02
+  max_position_pct: 0.05
+  max_gross_pct: 0.50
+  max_positions_per_day: 5
+  max_expiration_pct: 0.15
+  max_abs_delta: 0.60
+  max_abs_gamma: 0.20
+  max_abs_vega: 0.60
+  min_trade_pct: 0.0025
+  max_relative_spread: 0.25
+
+paths:
+  output_dir: ./model_output
+
+platform:
+  target_cloud: gcp
+  deployment_note: |
+    This code is designed to sit behind deterministic services or tools.
+    An LLM agent can orchestrate these artifacts, but should not bypass the risk controls.
+
+advanced:
+  training:
+    calibration_days: 5
+    purge_days: 5
+
+  surface_encoder:
+    n_components: 3
+    near_dte: 7
+    mid_dte: 21
+    long_dte: 60
+    atm_threshold: 0.015
+    near_threshold: 0.05
+
+  regime_router:
+    n_clusters: 3
+    expert_blend_weight: 0.65
+    min_regime_rows: 150
+    random_state: 42
+
+  conformal:
+    alpha: 0.10
+
+  watchdog:
+    psi_bins: 10
+    yellow_psi: 0.15
+    red_psi: 0.30
+    max_missing_share: 0.25
+    regime_confidence_floor: 0.45
+    yellow_action: shadow_only
+    red_action: halt
+    feature_limit: 24
