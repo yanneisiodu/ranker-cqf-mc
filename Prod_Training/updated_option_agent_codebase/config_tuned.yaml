@@ -1,0 +1,166 @@
+data:
+  horizon_days: 5
+  target_mode: net_long_return
+  profit_threshold: 0.00
+  commission_bps: 0.0
+  min_price_threshold: 0.05
+  max_relative_spread: 1.0
+  min_volume: 0
+  min_open_interest: 0
+  drop_zero_dte: false
+
+features:
+  rolling_windows: [5, 20]
+  categorical:
+    - type
+  auto_include_prefixes:
+    - surface_
+    - regime_
+    - news_
+    - filing_
+    - embed_
+    - signal_
+    - aux_
+  numerical:
+    - days_to_exp
+    - strike
+    - last
+    - bid
+    - ask
+    - mid_price
+    - volume
+    - open_interest
+    - implied_volatility
+    - delta
+    - gamma
+    - theta
+    - vega
+    - rho
+    - spy_d_close
+    - spy_d_sma_50
+    - spy_d_rsi
+    - spy_d_macd_hist
+    - vix_d_close
+    - moneyness
+    - relative_spread
+    - bid_ask_spread
+    - liquidity_score
+    - iv_vix_ratio
+    - spy_momentum
+    - price_change_1d
+    - iv_change_1d
+    - mid_roll_mean_5
+    - mid_roll_std_5
+    - mid_roll_mean_20
+    - mid_roll_std_20
+    - iv_roll_mean_5
+    - iv_roll_std_5
+    - volume_roll_mean_5
+    - volume_roll_mean_20
+    - volume_oi_ratio
+    - mispricing_ratio
+    - theta_carry
+    - vega_per_dollar
+    - gamma_per_dollar
+    - time_value_ratio
+    - delta_abs
+    - dist_to_atm
+    - quote_efficiency
+    - mid_price_pct_rank
+    - volume_pct_rank
+    - open_interest_pct_rank
+    - iv_pct_rank
+    - relative_spread_pct_rank
+    - moneyness_pct_rank
+
+# Optuna-tuned on 2023-2024 data (Phase 1: 100 trials, Phase 2: 100 trials)
+ranker:
+  n_splits: 4
+  purge_days: 5
+  min_fold_train_days: 10
+  n_estimators: 200
+  learning_rate: 0.0629003002734816
+  max_depth: 7
+  subsample: 0.6544904977135575
+  colsample_bytree: 0.5020098844691571
+  reg_alpha: 8.607258445987068
+  reg_lambda: 0.10572166980515829
+  top_k_eval: 20
+  relevance_bins: 5
+
+meta_labeler:
+  n_estimators: 690
+  learning_rate: 0.09432081405881163
+  max_depth: 4
+  subsample: 0.8572744432825605
+  colsample_bytree: 0.9971378800281628
+  reg_alpha: 0.019347367738793756
+  reg_lambda: 0.005136306781088211
+  calibration_days: 5
+  n_splits: 4
+  purge_days: 5
+
+return_model:
+  n_estimators: 440
+  learning_rate: 0.018060896857200845
+  max_depth: 2
+  subsample: 0.5298529387276997
+  calibration_days: 5
+  n_splits: 4
+  purge_days: 5
+
+portfolio:
+  starting_capital: 100000.0
+  kelly_fraction: 0.25
+  min_prob_to_trade: 0.30
+  min_expected_return: 0.01
+  max_position_pct: 0.05
+  max_gross_pct: 0.50
+  max_positions_per_day: 5
+  max_expiration_pct: 0.15
+  max_abs_delta: 0.60
+  max_abs_gamma: 0.20
+  max_abs_vega: 0.60
+  min_trade_pct: 0.0025
+  max_relative_spread: 0.25
+
+paths:
+  output_dir: ./model_output_tuned
+
+platform:
+  target_cloud: gcp
+  deployment_note: |
+    Production config with Optuna-tuned hyperparameters.
+    Tuned on 2023-2024, trained on 2021-2024, holdout on 2025.
+
+advanced:
+  training:
+    calibration_days: 5
+    purge_days: 5
+
+  surface_encoder:
+    n_components: 3
+    near_dte: 7
+    mid_dte: 21
+    long_dte: 60
+    atm_threshold: 0.015
+    near_threshold: 0.05
+
+  regime_router:
+    n_clusters: 3
+    expert_blend_weight: 0.65
+    min_regime_rows: 150
+    random_state: 42
+
+  conformal:
+    alpha: 0.10
+
+  watchdog:
+    psi_bins: 10
+    yellow_psi: 0.15
+    red_psi: 0.30
+    max_missing_share: 0.25
+    regime_confidence_floor: 0.45
+    yellow_action: shadow_only
+    red_action: halt
+    feature_limit: 24

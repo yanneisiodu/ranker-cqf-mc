@@ -83,7 +83,7 @@ def _ranker_model(config: RankerConfig) -> xgb.XGBRanker:
         colsample_bytree=config.colsample_bytree,
         reg_alpha=config.reg_alpha,
         reg_lambda=config.reg_lambda,
-        n_jobs=4,
+        n_jobs=-1,
     )
 
 

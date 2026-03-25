@@ -76,7 +76,7 @@ def _classifier(config: MetaLabelerConfig, scale_pos_weight: float) -> xgb.XGBCl
         reg_alpha=config.reg_alpha,
         reg_lambda=config.reg_lambda,
         scale_pos_weight=scale_pos_weight,
-        n_jobs=4,
+        n_jobs=-1,
     )
 
 

@@ -7,7 +7,7 @@ from typing import Dict, Optional, Sequence, Tuple
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingRegressor
+import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_pinball_loss, mean_squared_error
 
 from logger import setup_logger
@@ -55,18 +55,20 @@ class LogReturnConfig:
         )
 
 
-def _make_gbr(config: LogReturnConfig, loss: str, alpha: Optional[float] = None) -> GradientBoostingRegressor:
+def _make_regressor(config: LogReturnConfig, objective: str, alpha: Optional[float] = None) -> xgb.XGBRegressor:
     params = {
-        "loss": loss,
+        "objective": objective,
         "n_estimators": config.n_estimators,
         "learning_rate": config.learning_rate,
         "max_depth": config.max_depth,
         "subsample": config.subsample,
         "random_state": config.random_state,
+        "tree_method": "hist",
+        "n_jobs": -1,
     }
     if alpha is not None:
-        params["alpha"] = alpha
-    return GradientBoostingRegressor(**params)
+        params["quantile_alpha"] = alpha
+    return xgb.XGBRegressor(**params)
 
 
 def _augment_with_honest_ranker_features(
@@ -125,9 +127,9 @@ def fit_return_artifact(
     X_train = preprocessor.fit_transform(train_df[model_features])
     X_cal = preprocessor.transform(calibration_df[model_features])
 
-    low_model = _make_gbr(ret_cfg, loss="quantile", alpha=0.10)
-    mid_model = _make_gbr(ret_cfg, loss="squared_error")
-    high_model = _make_gbr(ret_cfg, loss="quantile", alpha=0.90)
+    low_model = _make_regressor(ret_cfg, objective="reg:quantileerror", alpha=0.10)
+    mid_model = _make_regressor(ret_cfg, objective="reg:squarederror")
+    high_model = _make_regressor(ret_cfg, objective="reg:quantileerror", alpha=0.90)
 
     target = train_df["target_signed_log_return"].to_numpy(dtype=float)
     low_model.fit(X_train, target)

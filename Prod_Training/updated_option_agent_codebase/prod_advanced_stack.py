@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.calibration import IsotonicRegression
-from sklearn.ensemble import GradientBoostingRegressor
+import xgboost as xgb
 from sklearn.metrics import average_precision_score, brier_score_loss, log_loss, mean_absolute_error, mean_pinball_loss, mean_squared_error, precision_score, recall_score, roc_auc_score
 
 from advanced_utils import DateSurfaceEncoder, DriftWatchdog, DriftWatchdogConfig, RegimeRouter, RegimeRouterConfig, SurfaceEncoderConfig
@@ -125,7 +125,7 @@ def _classifier(cfg: AdvancedMetaConfig, scale_pos_weight: float) -> xgb.XGBClas
         reg_alpha=cfg.reg_alpha,
         reg_lambda=cfg.reg_lambda,
         scale_pos_weight=scale_pos_weight,
-        n_jobs=4,
+        n_jobs=-1,
     )
 
 
@@ -257,33 +257,35 @@ class RegimeAwareReturnModel:
         self.categorical_features = list(categorical_features)
         self.numerical_features = [col for col in self.feature_columns if col not in set(self.categorical_features)]
         self.preprocessor = build_preprocessor(self.numerical_features, self.categorical_features)
-        self.models: Dict[str, GradientBoostingRegressor] = {}
-        self.expert_models: Dict[int, Dict[str, GradientBoostingRegressor]] = {}
+        self.models: Dict[str, xgb.XGBRegressor] = {}
+        self.expert_models: Dict[int, Dict[str, xgb.XGBRegressor]] = {}
         self.global_qhat_: float = 0.0
         self.regime_qhat_: Dict[int, float] = {}
         self.metrics_: Dict[str, object] = {}
 
-    def _make_gbr(self, loss: str, alpha: Optional[float] = None) -> GradientBoostingRegressor:
+    def _make_regressor(self, objective: str, alpha: Optional[float] = None) -> xgb.XGBRegressor:
         params = {
-            "loss": loss,
+            "objective": objective,
             "n_estimators": self.config.n_estimators,
             "learning_rate": self.config.learning_rate,
             "max_depth": self.config.max_depth,
             "subsample": self.config.subsample,
             "random_state": self.config.random_state,
+            "tree_method": "hist",
+            "n_jobs": -1,
         }
         if alpha is not None:
-            params["alpha"] = alpha
-        return GradientBoostingRegressor(**params)
+            params["quantile_alpha"] = alpha
+        return xgb.XGBRegressor(**params)
 
     def fit(self, train_df: pd.DataFrame, calibration_df: pd.DataFrame) -> "RegimeAwareReturnModel":
         X_train = self.preprocessor.fit_transform(train_df[self.feature_columns])
         target = train_df["target_signed_log_return"].to_numpy(dtype=float)
 
         self.models = {
-            "q10": self._make_gbr("quantile", alpha=0.10),
-            "mean": self._make_gbr("squared_error"),
-            "q90": self._make_gbr("quantile", alpha=0.90),
+            "q10": self._make_regressor("reg:quantileerror", alpha=0.10),
+            "mean": self._make_regressor("reg:squarederror"),
+            "q90": self._make_regressor("reg:quantileerror", alpha=0.90),
         }
         for model in self.models.values():
             model.fit(X_train, target)
@@ -295,9 +297,9 @@ class RegimeAwareReturnModel:
             X_subset = self.preprocessor.transform(subset[self.feature_columns])
             y_subset = subset["target_signed_log_return"].to_numpy(dtype=float)
             expert_group = {
-                "q10": self._make_gbr("quantile", alpha=0.10),
-                "mean": self._make_gbr("squared_error"),
-                "q90": self._make_gbr("quantile", alpha=0.90),
+                "q10": self._make_regressor("reg:quantileerror", alpha=0.10),
+                "mean": self._make_regressor("reg:squarederror"),
+                "q90": self._make_regressor("reg:quantileerror", alpha=0.90),
             }
             for model in expert_group.values():
                 model.fit(X_subset, y_subset)
