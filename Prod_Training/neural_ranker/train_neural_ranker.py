@@ -1,0 +1,413 @@
+"""Training script for the listwise neural option ranker.
+
+Two-stage approach:
+    1. XGBoost pre-ranks the full chain (~9K options/day)
+    2. Transformer re-ranks the top-K candidates (~200/day)
+
+Walk-forward training with purged splits. MPS-accelerated on Apple Silicon.
+
+Usage:
+    python train_neural_ranker.py \
+        --train-data year_2019_data.csv year_2020_data.csv ... year_2023_data.csv \
+        --val-data year_2024_data.csv \
+        --config config_tuned.yaml \
+        --output-dir ./neural_output
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import Dataset, DataLoader
+
+from logger import setup_logger
+from neural_ranker import (
+    ChainTransformer,
+    NeuralRankerConfig,
+    get_device,
+    listmle_loss,
+    ndcg_at_k,
+)
+from utils import (
+    build_preprocessor,
+    compute_relevance_bins,
+    apply_relevance_bins,
+    load_config,
+    prepare_model_frame,
+    save_json,
+    select_feature_columns,
+    summarize_frame,
+)
+
+logger = setup_logger(__name__)
+
+
+# ── dataset ─────────────────────────────────────────────────────────────────
+
+class DailyChainDataset(Dataset):
+    """Each sample is one day's full option chain after liquidity filtering.
+
+    Filters by spread <= max_spread to remove illiquid junk while retaining
+    99.8% of actual top-20 winners. No XGBoost pre-filtering needed.
+    """
+
+    def __init__(
+        self,
+        frame: pd.DataFrame,
+        feature_columns: List[str],
+        max_spread: float = 0.50,
+    ):
+        self.feature_columns = feature_columns
+        self.dates = sorted(frame["date"].unique())
+
+        # Liquidity filter: keep options with relative_spread <= max_spread
+        before = len(frame)
+        if "relative_spread" in frame.columns:
+            frame = frame[frame["relative_spread"] <= max_spread].reset_index(drop=True)
+        logger.info(
+            "Liquidity filter (spread<=%.0f%%): %d -> %d rows (%.1f%% retained)",
+            max_spread * 100, before, len(frame), len(frame) / before * 100,
+        )
+
+        # Group by date
+        self.groups: List[Tuple[np.ndarray, np.ndarray]] = []
+        for date in self.dates:
+            mask = frame["date"] == date
+            day_df = frame[mask]
+            if len(day_df) < 2:
+                continue
+            features = day_df[feature_columns].to_numpy(dtype=np.float32)
+            features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+            relevance = day_df["target_relevance"].to_numpy(dtype=np.float32)
+            self.groups.append((features, relevance))
+
+    def __len__(self) -> int:
+        return len(self.groups)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        features, relevance = self.groups[idx]
+        return torch.from_numpy(features), torch.from_numpy(relevance)
+
+
+def collate_chains(batch: List[Tuple[torch.Tensor, torch.Tensor]]):
+    """Pad variable-length chains to the longest in the batch."""
+    features_list, relevance_list = zip(*batch)
+    max_len = max(f.shape[0] for f in features_list)
+    input_dim = features_list[0].shape[1]
+
+    padded_features = torch.zeros(len(batch), max_len, input_dim)
+    padded_relevance = torch.zeros(len(batch), max_len)
+    padding_mask = torch.ones(len(batch), max_len, dtype=torch.bool)
+
+    for i, (f, r) in enumerate(zip(features_list, relevance_list)):
+        n = f.shape[0]
+        padded_features[i, :n] = f
+        padded_relevance[i, :n] = r
+        padding_mask[i, :n] = False
+
+    return padded_features, padded_relevance, padding_mask
+
+
+# ── training loop ───────────────────────────────────────────────────────────
+
+def train_one_epoch(
+    model: ChainTransformer,
+    loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    accum_steps: int = 16,
+) -> float:
+    model.train()
+    total_loss = 0.0
+    n_batches = 0
+    optimizer.zero_grad()
+
+    for step, (features, relevance, padding_mask) in enumerate(loader):
+        features = features.to(device)
+        relevance = relevance.to(device)
+        padding_mask = padding_mask.to(device)
+
+        scores = model(features, padding_mask=padding_mask)
+        loss = listmle_loss(scores, relevance, padding_mask=padding_mask)
+        loss = loss / accum_steps  # scale for accumulation
+        loss.backward()
+
+        total_loss += loss.item() * accum_steps
+        n_batches += 1
+
+        if (step + 1) % accum_steps == 0 or (step + 1) == len(loader):
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+
+    return total_loss / max(n_batches, 1)
+
+
+@torch.no_grad()
+def evaluate(
+    model: ChainTransformer,
+    loader: DataLoader,
+    device: torch.device,
+    k: int = 20,
+) -> Dict[str, float]:
+    model.eval()
+    total_loss = 0.0
+    n_batches = 0
+    all_ndcgs: List[float] = []
+
+    for features, relevance, padding_mask in loader:
+        features = features.to(device)
+        relevance = relevance.to(device)
+        padding_mask = padding_mask.to(device)
+
+        scores = model(features, padding_mask=padding_mask)
+        loss = listmle_loss(scores, relevance, padding_mask=padding_mask)
+        total_loss += loss.item()
+        n_batches += 1
+
+        # Compute NDCG per day in the batch
+        scores_np = scores.cpu().numpy()
+        relevance_np = relevance.cpu().numpy()
+        mask_np = padding_mask.cpu().numpy()
+
+        for i in range(scores_np.shape[0]):
+            valid = ~mask_np[i]
+            if valid.sum() < 2:
+                continue
+            s = scores_np[i][valid]
+            r = relevance_np[i][valid]
+            ndcg = ndcg_at_k(s, r, k=k)
+            if not np.isnan(ndcg):
+                all_ndcgs.append(ndcg)
+
+    return {
+        "loss": total_loss / max(n_batches, 1),
+        "ndcg_at_k": float(np.mean(all_ndcgs)) if all_ndcgs else float("nan"),
+        "ndcg_std": float(np.std(all_ndcgs)) if all_ndcgs else float("nan"),
+        "n_days": len(all_ndcgs),
+    }
+
+
+def train_neural_ranker(
+    train_files: Sequence[str],
+    val_files: Sequence[str],
+    config_file: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    nrows: Optional[int] = None,
+) -> Dict[str, Any]:
+    config = load_config(config_file)
+    nr_config = NeuralRankerConfig.from_config(config)
+    device = get_device()
+    logger.info("Using device: %s", device)
+
+    torch.manual_seed(nr_config.seed)
+    np.random.seed(nr_config.seed)
+
+    # Load data
+    logger.info("Loading training data...")
+    train_frame = prepare_model_frame(train_files, config, include_targets=True, nrows=nrows)
+    logger.info("Train: %s", summarize_frame(train_frame))
+
+    logger.info("Loading validation data...")
+    val_frame = prepare_model_frame(val_files, config, include_targets=True, nrows=nrows)
+    logger.info("Val: %s", summarize_frame(val_frame))
+
+    # Feature columns
+    feature_columns, numerical_features, categorical_features = select_feature_columns(train_frame, config)
+    # For neural net, use only numerical features (no categorical encoding needed — type is encoded numerically)
+    num_features = [c for c in feature_columns if c != "type"]
+
+    # Add type as numeric (call=1, put=0)
+    for frame in [train_frame, val_frame]:
+        frame["type_numeric"] = (frame["type"].str.lower() == "call").astype(np.float32)
+    num_features = num_features + ["type_numeric"]
+
+    # Compute relevance bins from training data
+    edges = compute_relevance_bins(train_frame["target_return"], n_bins=5)
+    train_frame["target_relevance"] = apply_relevance_bins(train_frame["target_return"], edges).astype(np.float32)
+    val_frame["target_relevance"] = apply_relevance_bins(val_frame["target_return"], edges).astype(np.float32)
+
+    # Normalize features using training stats
+    train_mean = train_frame[num_features].mean()
+    train_std = train_frame[num_features].std().replace(0, 1)
+    for frame in [train_frame, val_frame]:
+        frame[num_features] = (frame[num_features] - train_mean) / train_std
+        frame[num_features] = frame[num_features].fillna(0.0)
+
+    # Update config with actual input dim
+    actual_config = NeuralRankerConfig(
+        input_dim=len(num_features),
+        embed_dim=nr_config.embed_dim,
+        n_heads=nr_config.n_heads,
+        n_layers=nr_config.n_layers,
+        dropout=nr_config.dropout,
+        mlp_hidden=nr_config.mlp_hidden,
+        top_k_candidates=nr_config.top_k_candidates,
+        learning_rate=nr_config.learning_rate,
+        weight_decay=nr_config.weight_decay,
+        batch_dates=nr_config.batch_dates,
+        epochs=nr_config.epochs,
+        patience=nr_config.patience,
+        seed=nr_config.seed,
+    )
+    logger.info("Config: input_dim=%d, embed=%d, heads=%d, layers=%d",
+                actual_config.input_dim, actual_config.embed_dim,
+                actual_config.n_heads, actual_config.n_layers)
+
+    # Build datasets — full chain with liquidity filter only
+    logger.info("Building datasets (full chain, spread<=50%% filter)...")
+    train_ds = DailyChainDataset(train_frame, num_features, max_spread=0.50)
+    val_ds = DailyChainDataset(val_frame, num_features, max_spread=0.50)
+    logger.info("Train: %d days, Val: %d days", len(train_ds), len(val_ds))
+
+    # batch_size=1 (one day's chain per forward pass) since chains are ~7K options
+    # Gradient accumulation simulates larger effective batch size
+    accum_steps = actual_config.batch_dates  # accumulate over this many days
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=1,
+        shuffle=True,
+        collate_fn=collate_chains,
+        num_workers=0,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=1,
+        shuffle=False,
+        collate_fn=collate_chains,
+        num_workers=0,
+    )
+
+    # Build model
+    model = ChainTransformer(actual_config).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    logger.info("Model parameters: %s", f"{n_params:,}")
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=actual_config.learning_rate,
+        weight_decay=actual_config.weight_decay,
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=actual_config.epochs,
+        eta_min=1e-6,
+    )
+
+    # Training loop with early stopping
+    best_ndcg = -float("inf")
+    best_epoch = 0
+    best_state = None
+    history: List[Dict[str, Any]] = []
+
+    for epoch in range(1, actual_config.epochs + 1):
+        t0 = time.time()
+        train_loss = train_one_epoch(model, train_loader, optimizer, device, accum_steps=accum_steps)
+        val_metrics = evaluate(model, val_loader, device, k=20)
+        scheduler.step()
+        elapsed = time.time() - t0
+
+        val_ndcg = val_metrics["ndcg_at_k"]
+        lr = optimizer.param_groups[0]["lr"]
+
+        logger.info(
+            "Epoch %3d/%d | train_loss=%.4f | val_loss=%.4f | val_ndcg@20=%.4f | lr=%.2e | %.1fs",
+            epoch, actual_config.epochs, train_loss, val_metrics["loss"],
+            val_ndcg, lr, elapsed,
+        )
+
+        history.append({
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss": val_metrics["loss"],
+            "val_ndcg_at_k": val_ndcg,
+            "val_ndcg_std": val_metrics["ndcg_std"],
+            "val_n_days": val_metrics["n_days"],
+            "lr": lr,
+            "elapsed_s": elapsed,
+        })
+
+        if val_ndcg > best_ndcg:
+            best_ndcg = val_ndcg
+            best_epoch = epoch
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            logger.info("  ** New best NDCG@20 = %.4f at epoch %d **", best_ndcg, epoch)
+
+        if epoch - best_epoch >= actual_config.patience:
+            logger.info("Early stopping at epoch %d (patience=%d)", epoch, actual_config.patience)
+            break
+
+    # Restore best model
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    # Final evaluation
+    final_metrics = evaluate(model, val_loader, device, k=20)
+    logger.info("Final val NDCG@20 = %.4f (from epoch %d)", final_metrics["ndcg_at_k"], best_epoch)
+
+    # Save artifacts
+    root = Path(output_dir or "./neural_output")
+    root.mkdir(parents=True, exist_ok=True)
+
+    artifact = {
+        "model_state_dict": best_state,
+        "config": asdict(actual_config),
+        "feature_columns": num_features,
+        "relevance_edges": edges,
+        "train_mean": train_mean.to_dict(),
+        "train_std": train_std.to_dict(),
+        "best_epoch": best_epoch,
+        "best_ndcg": best_ndcg,
+    }
+    artifact_path = root / "neural_ranker_artifact.pt"
+    torch.save(artifact, artifact_path)
+    logger.info("Saved artifact to %s", artifact_path)
+
+    metrics = {
+        "best_epoch": best_epoch,
+        "best_ndcg_at_k": best_ndcg,
+        "final_val": final_metrics,
+        "n_params": n_params,
+        "device": str(device),
+        "history": history,
+    }
+    save_json(metrics, root / "neural_ranker_metrics.json")
+
+    return {
+        "artifact_path": str(artifact_path),
+        "best_ndcg": best_ndcg,
+        "best_epoch": best_epoch,
+        "n_params": n_params,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train a listwise neural option ranker")
+    parser.add_argument("--train-data", nargs="+", required=True, help="Training CSV files")
+    parser.add_argument("--val-data", nargs="+", required=True, help="Validation CSV files")
+    parser.add_argument("--config", default="./config_tuned.yaml", help="Path to YAML config")
+    parser.add_argument("--output-dir", default="./neural_output", help="Output directory")
+    parser.add_argument("--nrows", type=int, default=None, help="Row cap for debugging")
+    args = parser.parse_args()
+
+    result = train_neural_ranker(
+        args.train_data,
+        args.val_data,
+        config_file=args.config,
+        output_dir=args.output_dir,
+        nrows=args.nrows,
+    )
+    logger.info("Training complete: %s", result)
+
+
+if __name__ == "__main__":
+    # Also add the updated_option_agent_codebase to path for prod_train_ranker imports
+    sys.path.insert(0, str(Path(__file__).parent.parent / "updated_option_agent_codebase"))
+    main()
