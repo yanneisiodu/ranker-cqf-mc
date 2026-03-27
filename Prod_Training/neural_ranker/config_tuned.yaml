@@ -72,6 +72,21 @@ features:
     - iv_pct_rank
     - relative_spread_pct_rank
     - moneyness_pct_rank
+    # Higher-order Greeks (ThetaData)
+    - vanna
+    - charm
+    - vomma
+    - speed
+    - zomma
+    - color
+    - ultima
+    - lambda_greek
+    - underlying_price
+    # Realized volatility & variance risk premium
+    - realized_vol_5d
+    - realized_vol_20d
+    - realized_vol_60d
+    - vrp_20d
 
 # Optuna-tuned on 2023-2024 data (Phase 1: 100 trials, Phase 2: 100 trials)
 ranker:
