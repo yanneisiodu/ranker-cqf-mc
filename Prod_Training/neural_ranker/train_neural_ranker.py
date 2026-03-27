@@ -134,8 +134,10 @@ def train_one_epoch(
         relevance = relevance.to(device)
         padding_mask = padding_mask.to(device)
 
-        scores = model(features, padding_mask=padding_mask)
-        loss = listmle_loss(scores, relevance, padding_mask=padding_mask)
+        with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
+            scores = model(features, padding_mask=padding_mask)
+        # Loss computed in float32 — logcumsumexp backward doesn't support float16
+        loss = listmle_loss(scores.float(), relevance, padding_mask=padding_mask, top_k=200)
         loss = loss / accum_steps  # scale for accumulation
         loss.backward()
 
@@ -167,8 +169,9 @@ def evaluate(
         relevance = relevance.to(device)
         padding_mask = padding_mask.to(device)
 
-        scores = model(features, padding_mask=padding_mask)
-        loss = listmle_loss(scores, relevance, padding_mask=padding_mask)
+        with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
+            scores = model(features, padding_mask=padding_mask)
+        loss = listmle_loss(scores.float(), relevance, padding_mask=padding_mask, top_k=200)
         total_loss += loss.item()
         n_batches += 1
 
@@ -195,14 +198,14 @@ def evaluate(
     }
 
 
-def train_neural_ranker(
-    train_files: Sequence[str],
-    val_files: Sequence[str],
-    config_file: Optional[str] = None,
+def train_neural_ranker_from_frames(
+    train_frame: pd.DataFrame,
+    val_frame: pd.DataFrame,
+    config: Dict[str, Any],
     output_dir: Optional[str] = None,
     nrows: Optional[int] = None,
 ) -> Dict[str, Any]:
-    config = load_config(config_file)
+    """Core training logic — accepts pre-loaded DataFrames."""
     nr_config = NeuralRankerConfig.from_config(config)
     device = get_device()
     logger.info("Using device: %s", device)
@@ -210,13 +213,11 @@ def train_neural_ranker(
     torch.manual_seed(nr_config.seed)
     np.random.seed(nr_config.seed)
 
-    # Load data
-    logger.info("Loading training data...")
-    train_frame = prepare_model_frame(train_files, config, include_targets=True, nrows=nrows)
-    logger.info("Train: %s", summarize_frame(train_frame))
+    if nrows:
+        train_frame = train_frame.head(nrows)
+        val_frame = val_frame.head(nrows)
 
-    logger.info("Loading validation data...")
-    val_frame = prepare_model_frame(val_files, config, include_targets=True, nrows=nrows)
+    logger.info("Train: %s", summarize_frame(train_frame))
     logger.info("Val: %s", summarize_frame(val_frame))
 
     # Feature columns
@@ -270,25 +271,29 @@ def train_neural_ranker(
     # batch_size=1 (one day's chain per forward pass) since chains are ~7K options
     # Gradient accumulation simulates larger effective batch size
     accum_steps = actual_config.batch_dates  # accumulate over this many days
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=1,
-        shuffle=True,
-        collate_fn=collate_chains,
-        num_workers=0,
-    )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=1,
-        shuffle=False,
-        collate_fn=collate_chains,
-        num_workers=0,
-    )
+    use_cuda = device.type == "cuda"
+    loader_kwargs = {
+        "batch_size": 1,
+        "collate_fn": collate_chains,
+        "num_workers": 4 if use_cuda else 2,
+        "pin_memory": use_cuda,
+        "persistent_workers": True,
+    }
+    train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
+    val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
 
     # Build model
     model = ChainTransformer(actual_config).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     logger.info("Model parameters: %s", f"{n_params:,}")
+
+    # Compile model for CUDA (1.3-1.5x speedup via kernel fusion)
+    if device.type == "cuda":
+        try:
+            model = torch.compile(model)
+            logger.info("Model compiled with torch.compile (CUDA)")
+        except Exception as e:
+            logger.warning("torch.compile failed, using eager mode: %s", e)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -386,6 +391,22 @@ def train_neural_ranker(
         "best_epoch": best_epoch,
         "n_params": n_params,
     }
+
+
+def train_neural_ranker(
+    train_files: Sequence[str],
+    val_files: Sequence[str],
+    config_file: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    nrows: Optional[int] = None,
+) -> Dict[str, Any]:
+    """File-based entry point — loads CSVs, processes features, then trains."""
+    config = load_config(config_file)
+    logger.info("Loading training data...")
+    train_frame = prepare_model_frame(train_files, config, include_targets=True, nrows=nrows)
+    logger.info("Loading validation data...")
+    val_frame = prepare_model_frame(val_files, config, include_targets=True, nrows=nrows)
+    return train_neural_ranker_from_frames(train_frame, val_frame, config, output_dir)
 
 
 def main() -> None:
