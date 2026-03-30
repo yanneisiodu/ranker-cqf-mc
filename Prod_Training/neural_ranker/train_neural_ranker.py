@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
 from logger import setup_logger
@@ -123,9 +124,15 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     accum_steps: int = 16,
-) -> float:
+    recon_head: Optional[nn.Module] = None,
+    recon_weight: float = 0.1,
+    mask_ratio: float = 0.15,
+) -> Dict[str, float]:
     model.train()
-    total_loss = 0.0
+    if recon_head is not None:
+        recon_head.train()
+    total_rank_loss = 0.0
+    total_recon_loss = 0.0
     n_batches = 0
     optimizer.zero_grad()
 
@@ -134,22 +141,54 @@ def train_one_epoch(
         relevance = relevance.to(device)
         padding_mask = padding_mask.to(device)
 
+        # Ranking loss
         with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
             scores = model(features, padding_mask=padding_mask)
-        # Loss computed in float32 — logcumsumexp backward doesn't support float16
-        loss = listmle_loss(scores.float(), relevance, padding_mask=padding_mask, top_k=200)
-        loss = loss / accum_steps  # scale for accumulation
-        loss.backward()
+        rank_loss = listmle_loss(scores.float(), relevance, padding_mask=padding_mask, top_k=200)
 
-        total_loss += loss.item() * accum_steps
+        # Multi-task: reconstruction loss as regularizer
+        if recon_head is not None:
+            # Mask random options and reconstruct
+            B, S, D = features.shape
+            n_mask = max(1, int(S * mask_ratio))
+            mask_idx = torch.randint(0, S, (B, n_mask), device=device)
+            masked_input = features.clone()
+            for b in range(B):
+                masked_input[b, mask_idx[b]] = 0.0
+
+            embeddings = model.encoder(masked_input)
+            embeddings = model.transformer(embeddings, src_key_padding_mask=padding_mask)
+            predictions = recon_head(embeddings)
+
+            # MSE on masked positions only
+            recon_loss = 0.0
+            for b in range(B):
+                idx = mask_idx[b]
+                recon_loss = recon_loss + nn.functional.mse_loss(
+                    predictions[b, idx], features[b, idx]
+                )
+            recon_loss = recon_loss / B
+            loss = (rank_loss + recon_weight * recon_loss) / accum_steps
+            total_recon_loss += recon_loss.item()
+        else:
+            loss = rank_loss / accum_steps
+
+        loss.backward()
+        total_rank_loss += rank_loss.item()
         n_batches += 1
 
         if (step + 1) % accum_steps == 0 or (step + 1) == len(loader):
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            all_params = list(model.parameters())
+            if recon_head is not None:
+                all_params += list(recon_head.parameters())
+            torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
             optimizer.step()
             optimizer.zero_grad()
 
-    return total_loss / max(n_batches, 1)
+    return {
+        "rank_loss": total_rank_loss / max(n_batches, 1),
+        "recon_loss": total_recon_loss / max(n_batches, 1) if recon_head else 0.0,
+    }
 
 
 @torch.no_grad()
@@ -162,7 +201,7 @@ def evaluate(
     model.eval()
     total_loss = 0.0
     n_batches = 0
-    all_ndcgs: List[float] = []
+    ndcg_lists: Dict[int, List[float]] = {1: [], 5: [], 10: [], 20: []}
 
     for features, relevance, padding_mask in loader:
         features = features.to(device)
@@ -175,7 +214,6 @@ def evaluate(
         total_loss += loss.item()
         n_batches += 1
 
-        # Compute NDCG per day in the batch
         scores_np = scores.cpu().numpy()
         relevance_np = relevance.cpu().numpy()
         mask_np = padding_mask.cpu().numpy()
@@ -186,16 +224,18 @@ def evaluate(
                 continue
             s = scores_np[i][valid]
             r = relevance_np[i][valid]
-            ndcg = ndcg_at_k(s, r, k=k)
-            if not np.isnan(ndcg):
-                all_ndcgs.append(ndcg)
+            for kk in ndcg_lists:
+                val = ndcg_at_k(s, r, k=kk)
+                if not np.isnan(val):
+                    ndcg_lists[kk].append(val)
 
-    return {
-        "loss": total_loss / max(n_batches, 1),
-        "ndcg_at_k": float(np.mean(all_ndcgs)) if all_ndcgs else float("nan"),
-        "ndcg_std": float(np.std(all_ndcgs)) if all_ndcgs else float("nan"),
-        "n_days": len(all_ndcgs),
-    }
+    result = {"loss": total_loss / max(n_batches, 1)}
+    for kk, vals in ndcg_lists.items():
+        result[f"ndcg_at_{kk}"] = float(np.mean(vals)) if vals else float("nan")
+    result["ndcg_at_k"] = result["ndcg_at_20"]  # backward compat
+    result["ndcg_std"] = float(np.std(ndcg_lists[20])) if ndcg_lists[20] else float("nan")
+    result["n_days"] = len(ndcg_lists[20])
+    return result
 
 
 def train_neural_ranker_from_frames(
@@ -314,7 +354,8 @@ def train_neural_ranker_from_frames(
 
     for epoch in range(1, actual_config.epochs + 1):
         t0 = time.time()
-        train_loss = train_one_epoch(model, train_loader, optimizer, device, accum_steps=accum_steps)
+        train_metrics = train_one_epoch(model, train_loader, optimizer, device, accum_steps=accum_steps)
+        train_loss = train_metrics["rank_loss"]
         val_metrics = evaluate(model, val_loader, device, k=20)
         scheduler.step()
         elapsed = time.time() - t0
@@ -323,9 +364,10 @@ def train_neural_ranker_from_frames(
         lr = optimizer.param_groups[0]["lr"]
 
         logger.info(
-            "Epoch %3d/%d | train_loss=%.4f | val_loss=%.4f | val_ndcg@20=%.4f | lr=%.2e | %.1fs",
+            "Epoch %3d/%d | loss=%.4f/%.4f | ndcg@1=%.3f @5=%.3f @10=%.3f @20=%.3f | lr=%.2e | %.1fs",
             epoch, actual_config.epochs, train_loss, val_metrics["loss"],
-            val_ndcg, lr, elapsed,
+            val_metrics.get("ndcg_at_1", 0), val_metrics.get("ndcg_at_5", 0),
+            val_metrics.get("ndcg_at_10", 0), val_ndcg, lr, elapsed,
         )
 
         history.append({
@@ -391,6 +433,177 @@ def train_neural_ranker_from_frames(
         "best_epoch": best_epoch,
         "n_params": n_params,
     }
+
+
+class PrebuiltDataset(Dataset):
+    """Dataset from pre-built (features, relevance) numpy arrays."""
+
+    def __init__(self, groups: List[Tuple[np.ndarray, np.ndarray]]):
+        self.groups = groups
+
+    def __len__(self) -> int:
+        return len(self.groups)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        features, relevance = self.groups[idx]
+        return torch.from_numpy(features), torch.from_numpy(relevance)
+
+
+def train_neural_ranker_from_datasets(
+    train_groups: List[Tuple[np.ndarray, np.ndarray]],
+    val_groups: List[Tuple[np.ndarray, np.ndarray]],
+    num_features: List[str],
+    train_mean: "pd.Series",
+    train_std: "pd.Series",
+    relevance_edges: np.ndarray,
+    config: Dict[str, Any],
+    output_dir: Optional[str] = None,
+    pretrained_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Memory-efficient entry point — accepts pre-built daily groups.
+
+    If pretrained_path is provided, loads pretrained encoder weights
+    before fine-tuning on ranking.
+    """
+    nr_config = NeuralRankerConfig.from_config(config)
+    device = get_device()
+    logger.info("Using device: %s", device)
+
+    torch.manual_seed(nr_config.seed)
+    np.random.seed(nr_config.seed)
+
+    actual_config = NeuralRankerConfig(
+        input_dim=len(num_features),
+        embed_dim=nr_config.embed_dim,
+        n_heads=nr_config.n_heads,
+        n_layers=nr_config.n_layers,
+        dropout=nr_config.dropout,
+        mlp_hidden=nr_config.mlp_hidden,
+        top_k_candidates=nr_config.top_k_candidates,
+        learning_rate=nr_config.learning_rate,
+        weight_decay=nr_config.weight_decay,
+        batch_dates=nr_config.batch_dates,
+        epochs=nr_config.epochs,
+        patience=nr_config.patience,
+        seed=nr_config.seed,
+    )
+    logger.info("Config: input_dim=%d, embed=%d, heads=%d, layers=%d",
+                actual_config.input_dim, actual_config.embed_dim,
+                actual_config.n_heads, actual_config.n_layers)
+    logger.info("Train: %d days, Val: %d days", len(train_groups), len(val_groups))
+
+    train_ds = PrebuiltDataset(train_groups)
+    val_ds = PrebuiltDataset(val_groups)
+
+    use_cuda = device.type == "cuda"
+    accum_steps = actual_config.batch_dates
+    loader_kwargs = {
+        "batch_size": 1,
+        "collate_fn": collate_chains,
+        "num_workers": 4 if use_cuda else 2,
+        "pin_memory": use_cuda,
+        "persistent_workers": True,
+    }
+    train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
+    val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
+
+    model = ChainTransformer(actual_config).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    logger.info("Model parameters: %s", f"{n_params:,}")
+
+    # Load pretrained encoder weights if available
+    if pretrained_path:
+        pretrained = torch.load(pretrained_path, map_location="cpu", weights_only=False)
+        encoder_state = pretrained["encoder_state_dict"]
+        missing, unexpected = model.load_state_dict(encoder_state, strict=False)
+        logger.info("Loaded pretrained encoder from %s", pretrained_path)
+        logger.info("  Missing keys (expected — ranking head): %s", missing)
+        if unexpected:
+            logger.warning("  Unexpected keys: %s", unexpected)
+
+    if device.type == "cuda":
+        try:
+            model = torch.compile(model)
+            logger.info("Model compiled with torch.compile (CUDA)")
+        except Exception as e:
+            logger.warning("torch.compile failed, using eager mode: %s", e)
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=actual_config.learning_rate,
+        weight_decay=actual_config.weight_decay,
+    )
+
+    # Warmup + cosine schedule
+    warmup = actual_config.warmup_epochs
+    def lr_lambda(epoch):
+        if epoch < warmup:
+            return (epoch + 1) / max(warmup, 1)
+        progress = (epoch - warmup) / max(actual_config.epochs - warmup, 1)
+        return 0.5 * (1 + np.cos(np.pi * progress))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+    best_ndcg = -float("inf")
+    best_epoch = 0
+    best_state = None
+    history = []
+
+    for epoch in range(1, actual_config.epochs + 1):
+        t0 = time.time()
+        train_metrics = train_one_epoch(model, train_loader, optimizer, device, accum_steps=accum_steps)
+        train_loss = train_metrics["rank_loss"]
+        val_metrics = evaluate(model, val_loader, device, k=20)
+        scheduler.step()
+        elapsed = time.time() - t0
+
+        val_ndcg = val_metrics["ndcg_at_k"]
+        lr = optimizer.param_groups[0]["lr"]
+        logger.info(
+            "Epoch %3d/%d | loss=%.4f/%.4f | ndcg@1=%.3f @5=%.3f @10=%.3f @20=%.3f | lr=%.2e | %.1fs",
+            epoch, actual_config.epochs, train_loss, val_metrics["loss"],
+            val_metrics.get("ndcg_at_1", 0), val_metrics.get("ndcg_at_5", 0),
+            val_metrics.get("ndcg_at_10", 0), val_ndcg, lr, elapsed,
+        )
+        history.append({"epoch": epoch, "train_loss": train_loss,
+                        "val_loss": val_metrics["loss"], "val_ndcg_at_k": val_ndcg,
+                        "lr": lr, "elapsed_s": elapsed})
+
+        if val_ndcg > best_ndcg:
+            best_ndcg = val_ndcg
+            best_epoch = epoch
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            logger.info("  ** New best NDCG@20 = %.4f at epoch %d **", best_ndcg, epoch)
+
+        if epoch - best_epoch >= actual_config.patience:
+            logger.info("Early stopping at epoch %d (patience=%d)", epoch, actual_config.patience)
+            break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    root = Path(output_dir or "./neural_output")
+    root.mkdir(parents=True, exist_ok=True)
+
+    artifact = {
+        "model_state_dict": best_state,
+        "config": asdict(actual_config),
+        "feature_columns": num_features,
+        "relevance_edges": relevance_edges,
+        "train_mean": train_mean.to_dict(),
+        "train_std": train_std.to_dict(),
+        "best_epoch": best_epoch,
+        "best_ndcg": best_ndcg,
+    }
+    artifact_path = root / "neural_ranker_artifact.pt"
+    torch.save(artifact, artifact_path)
+    logger.info("Saved artifact to %s", artifact_path)
+
+    save_json({"best_epoch": best_epoch, "best_ndcg_at_k": best_ndcg,
+               "n_params": n_params, "device": str(device), "history": history},
+              root / "neural_ranker_metrics.json")
+
+    return {"artifact_path": str(artifact_path), "best_ndcg": best_ndcg,
+            "best_epoch": best_epoch, "n_params": n_params}
 
 
 def train_neural_ranker(

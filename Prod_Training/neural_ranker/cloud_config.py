@@ -17,6 +17,19 @@ class CloudConfig:
     OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/app/output")
     CONFIG_PATH = os.getenv("CONFIG_PATH", "./config_tuned.yaml")
 
+    # Mode: "train", "sweep", or "optuna"
+    MODE = os.getenv("MODE", "train")
+
+    # Optuna seed (different per job for parallel exploration)
+    OPTUNA_SEED = int(os.getenv("OPTUNA_SEED", "") or "42")
+
+    # Pretrained weights path (GCS or local)
+    PRETRAINED_PATH = os.getenv("PRETRAINED_PATH", "")
+
+    # Target overrides
+    TARGET_MODE = os.getenv("TARGET_MODE", "")  # net_long_return or net_delta_hedged_return
+    HORIZON_DAYS = int(os.getenv("HORIZON_DAYS", "") or "0")  # 0 = use config default
+
     # Training overrides
     EPOCHS = int(os.getenv("EPOCHS", "50"))
     PATIENCE = int(os.getenv("PATIENCE", "8"))
