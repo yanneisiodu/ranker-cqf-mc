@@ -244,6 +244,33 @@ All in git history if needed, but proven inferior:
 - `NEURAL_RANKER_PLAN.md` — superseded by this README
 - `RESULTS.md` — superseded by this README
 
+## REMAINING BUGS — Must Fix Before Further Model Work
+
+These were identified by code review on 2026-03-31. Do NOT start architecture experiments until these are resolved.
+
+### Bug 1: Local training path filters AFTER normalization
+`train_neural_ranker_from_frames()` normalizes `train_frame` and `val_frame` first, then calls `filter_tradeable_raw()`. But after normalization, `ask`, `relative_spread`, `volume`, `open_interest` are z-scored, not raw values. **The local/debug path trains on a different universe than the Cloud Run production path** (which correctly filters before normalizing). Fix: preserve raw columns before normalization, filter on raw, then normalize. Or stop using `from_frames` entirely.
+
+### Bug 2: Optuna sweep uses stale data loading
+`optuna_neural_sweep.py` hardcodes `year_{year}_prepared.parquet` and still filters with `df["relative_spread"] <= 0.50` post-normalization. It ignores the target/horizon suffix routing used by `entrypoint.sh`. **Hyperparameters were tuned on a different data universe than production training.**
+
+### Bug 3: Config fields not wired through
+`config_tuned.yaml` specifies `warmup_epochs: 1`, `feature_noise: 0.06`, and `listmle_top_k` (implicit). But `train_neural_ranker_from_datasets` rebuilds `actual_config` without carrying through `warmup_epochs` or `feature_noise`. The `listmle_loss(..., top_k=200)` is hardcoded in training/eval loops. **The trained model does not match the tuned config.**
+
+### Bug 4: ListMLE truncation docs vs implementation mismatch
+The docstring says truncated ListMLE uses the full score vector in the denominator. The implementation truncates `sorted_scores` to `top_k` BEFORE cumulative log-sum-exp, so the denominator is NOT full-chain. This changes what the model optimizes. **Either fix the docs or the code — they must agree.**
+
+### Bug 5: 5-bin relevance with tie-blind ListMLE (NDCG ceiling)
+Target returns are binned into only 5 relevance levels for ~6,500 options/day. This creates massive ties within each bin. ListMLE is forced to care about arbitrary within-bin ordering that NDCG doesn't reward. **This is likely the primary reason NDCG is stuck at 0.63-0.66.** Consider: more bins (10-20), continuous relevance, or ApproxNDCG loss.
+
+### Fix order:
+1. Fix Bug 1 (local path) or deprecate `from_frames`
+2. Fix Bug 2 (Optuna) — same filter/suffix as production
+3. Fix Bug 3 (wire warmup_epochs, feature_noise, listmle_top_k)
+4. Fix Bug 4 (docs or implementation)
+5. Address Bug 5 (relevance bins / loss design) — this is the NDCG ceiling breaker
+6. **Retrain on the corrected universe** before trusting any backtest numbers
+
 ## Python Environment
 
 **Location:** `/Users/chinonsoisiodu/Documents/global_python_env/bin/python`
