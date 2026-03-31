@@ -89,10 +89,12 @@ def build_candidate_dataset(
         if raw in frame.columns:
             frame[col] = frame[raw]
 
-    # Rolling efficacy tracking
+    # Rolling efficacy tracking with maturity queue
+    # Outcomes are queued by exit_date and only mature when current_date >= exit_date
     recent_call_returns = []
     recent_put_returns = []
     recent_basket_returns = []
+    pending_outcomes = []  # list of (exit_date, call_returns, put_returns, basket_return)
 
     dates = sorted(frame["date"].unique())
     logger.info("Processing %d dates...", len(dates))
@@ -100,6 +102,17 @@ def build_candidate_dataset(
     all_candidates = []
 
     for i, date in enumerate(dates):
+        # Mature pending outcomes whose exit_date <= current date
+        still_pending = []
+        for pend in pending_outcomes:
+            if pend["exit_date"] <= date:
+                recent_call_returns.extend(pend["call_returns"])
+                recent_put_returns.extend(pend["put_returns"])
+                if np.isfinite(pend["basket_return"]):
+                    recent_basket_returns.append(pend["basket_return"])
+            else:
+                still_pending.append(pend)
+        pending_outcomes = still_pending
         day = frame[frame["date"] == date]
         if len(day) < 20:
             continue
@@ -204,15 +217,18 @@ def build_candidate_dataset(
             }
             all_candidates.append(candidate)
 
-        # Update rolling efficacy from this day's matured outcomes
-        if "target_return" in top.columns:
+        # Queue outcomes to mature on exit_date (NOT same-day)
+        if "target_return" in top.columns and "exit_date" in top.columns:
+            exit_date = top["exit_date"].dropna().iloc[0] if len(top["exit_date"].dropna()) > 0 else date + pd.Timedelta(days=7)
             calls = top[top["type"] == "call"]["target_return"].dropna()
             puts = top[top["type"] == "put"]["target_return"].dropna()
-            recent_call_returns.extend(calls.tolist())
-            recent_put_returns.extend(puts.tolist())
             basket_ret = top["target_return"].mean()
-            if np.isfinite(basket_ret):
-                recent_basket_returns.append(basket_ret)
+            pending_outcomes.append({
+                "exit_date": exit_date,
+                "call_returns": calls.tolist(),
+                "put_returns": puts.tolist(),
+                "basket_return": basket_ret,
+            })
 
         if (i + 1) % 100 == 0:
             logger.info("  %d/%d dates, %d candidates", i + 1, len(dates), len(all_candidates))

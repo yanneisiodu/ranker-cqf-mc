@@ -202,8 +202,10 @@ class PurgedWalkForwardSplit:
             test_dates = unique_dates[test_start_pos:test_end_pos]
             if len(test_dates) == 0:
                 continue
-            purge_cutoff = pd.Timestamp(test_dates[0]) - pd.Timedelta(days=self.purge_days)
-            train_mask = date_series < purge_cutoff
+            # Purge by trading sessions, not calendar days
+            purge_cutoff_pos = max(0, test_start_pos - self.purge_days)
+            train_dates_allowed = unique_dates[:purge_cutoff_pos]
+            train_mask = date_series.isin(train_dates_allowed)
             test_mask = date_series.isin(test_dates)
             train_idx = date_series.index[train_mask].to_numpy()
             test_idx = date_series.index[test_mask].to_numpy()
@@ -641,9 +643,10 @@ def split_train_calibration(dates: Sequence[pd.Timestamp], calibration_days: int
         effective_calibration_days = 1
 
     calibration_dates = unique_dates[-effective_calibration_days:]
-    calibration_start = pd.Timestamp(calibration_dates[0])
-    train_cutoff = calibration_start - pd.Timedelta(days=effective_purge_days)
-    train_idx = date_series.index[date_series < train_cutoff].to_numpy()
+    # Purge by trading sessions, not calendar days
+    train_end_pos = len(unique_dates) - effective_calibration_days - effective_purge_days
+    train_dates_allowed = unique_dates[:max(0, train_end_pos)]
+    train_idx = date_series.index[date_series.isin(train_dates_allowed)].to_numpy()
     calibration_idx = date_series.index[date_series.isin(calibration_dates)].to_numpy()
     if len(train_idx) == 0 or len(calibration_idx) == 0:
         raise ValueError("Train/calibration split produced an empty partition")
@@ -657,10 +660,46 @@ def validate_purged_split(train_dates: Sequence[pd.Timestamp], test_dates: Seque
         raise ValueError("Both train and test dates must be non-empty")
     max_train = pd.Timestamp(train_dates.max())
     min_test = pd.Timestamp(test_dates.min())
-    if not max_train < (min_test - pd.Timedelta(days=purge_days)):
+    # Count trading sessions between max_train and min_test
+    all_dates = np.sort(np.unique(np.concatenate([train_dates.values, test_dates.values])))
+    max_train_pos = np.searchsorted(all_dates, max_train)
+    min_test_pos = np.searchsorted(all_dates, min_test)
+    gap_sessions = min_test_pos - max_train_pos - 1
+    if gap_sessions < purge_days:
         raise AssertionError(
-            f"Purged split violated: max train date {max_train} is not earlier than test start {min_test} - {purge_days}d"
+            f"Purged split violated: {gap_sessions} trading sessions between train end {max_train.date()} "
+            f"and test start {min_test.date()}, need {purge_days}"
         )
+
+
+def split_train_cal_test_by_date(
+    dates: pd.Series,
+    cal_sessions: int = 30,
+    test_sessions: int = 60,
+    purge_sessions: int = 5,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Three-way date-level purged split for operator training.
+
+    Returns train_idx, cal_idx, test_idx ensuring:
+    - No date appears in more than one split
+    - Purge gap between train/cal and cal/test
+    """
+    date_series = pd.Series(pd.to_datetime(dates)).reset_index(drop=True)
+    unique_dates = np.sort(date_series.dropna().unique())
+    n = len(unique_dates)
+
+    test_dates = unique_dates[-(test_sessions):]
+    cal_end_pos = n - test_sessions - purge_sessions
+    cal_start_pos = max(0, cal_end_pos - cal_sessions)
+    cal_dates = unique_dates[cal_start_pos:cal_end_pos]
+    train_end_pos = max(0, cal_start_pos - purge_sessions)
+    train_dates = unique_dates[:train_end_pos]
+
+    train_idx = date_series.index[date_series.isin(train_dates)].to_numpy()
+    cal_idx = date_series.index[date_series.isin(cal_dates)].to_numpy()
+    test_idx = date_series.index[date_series.isin(test_dates)].to_numpy()
+
+    return train_idx, cal_idx, test_idx
 
 
 def get_output_dir(config: Mapping[str, object], output_dir: Optional[Union[str, os.PathLike]] = None) -> Path:

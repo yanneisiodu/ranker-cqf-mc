@@ -309,6 +309,7 @@ def build_operator_dataset(
 
     day_rows = []
     history_df = pd.DataFrame()
+    pending_outcomes = []  # maturity queue: outcomes settle on exit_date
 
     for i, date in enumerate(dates):
         day = frame[frame["date"] == date]
@@ -325,19 +326,32 @@ def build_operator_dataset(
         day_feats = compute_day_features(day, scores, history_df, top_k=40)
         day_feats["date"] = str(date)
 
-        # Compute matured outcome
+        # Mature pending outcomes whose exit_date <= current date
+        still_pending = []
+        for pend in pending_outcomes:
+            if pend["exit_date"] <= date:
+                history_df = pd.concat([history_df, pd.DataFrame([{
+                    "date": pend["entry_date"],
+                    "basket_return": pend["basket_return"],
+                    "call_return": pend.get("call_return", np.nan),
+                    "put_return": pend.get("put_return", np.nan),
+                }])], ignore_index=True)
+            else:
+                still_pending.append(pend)
+        pending_outcomes = still_pending
+
+        # Compute outcome (labels) but queue to exit_date
         outcome = compute_matured_outcome(day, scores, top_k=20)
         if outcome:
             day_feats.update(outcome)
-
-            # Update rolling history
-            history_row = {
-                "date": date,
+            exit_date = day["exit_date"].dropna().iloc[0] if "exit_date" in day.columns and len(day["exit_date"].dropna()) > 0 else date + pd.Timedelta(days=7)
+            pending_outcomes.append({
+                "exit_date": exit_date,
+                "entry_date": date,
                 "basket_return": outcome["basket_return"],
                 "call_return": outcome.get("call_return", np.nan),
                 "put_return": outcome.get("put_return", np.nan),
-            }
-            history_df = pd.concat([history_df, pd.DataFrame([history_row])], ignore_index=True)
+            })
 
         day_rows.append(day_feats)
 

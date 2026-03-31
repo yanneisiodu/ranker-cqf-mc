@@ -90,11 +90,15 @@ def train_day_gate(df: pd.DataFrame, output_dir: Path) -> Dict[str, Any]:
     class_names = ["sit_out", "normal", "aggressive"]
     logger.info("  Class distribution: %s", dict(zip(class_names, np.bincount(y_simple, minlength=3))))
 
-    # Time-series CV (purged)
-    n = len(X)
-    train_size = int(n * 0.7)
-    X_train, X_val = X[:train_size], X[train_size:]
-    y_train, y_val = y_simple[:train_size], y_simple[train_size:]
+    # Date-level purged split
+    from utils import split_train_cal_test_by_date
+    if "date" not in df.columns:
+        raise ValueError("Operator dataset must have a 'date' column")
+    train_idx, cal_idx, test_idx = split_train_cal_test_by_date(
+        df["date"], cal_sessions=20, test_sessions=40, purge_sessions=5,
+    )
+    X_train, y_train = X[train_idx], y_simple[train_idx]
+    X_val, y_val = X[cal_idx], y_simple[cal_idx]
 
     model = xgb.XGBClassifier(
         objective="multi:softprob",

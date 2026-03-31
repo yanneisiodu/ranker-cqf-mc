@@ -63,19 +63,11 @@ class DailyChainDataset(Dataset):
         self,
         frame: pd.DataFrame,
         feature_columns: List[str],
-        max_spread: float = 0.50,
     ):
+        """Assumes raw liquidity filtering has already been applied upstream."""
         self.feature_columns = feature_columns
         self.dates = sorted(frame["date"].unique())
-
-        # Liquidity filter: keep options with relative_spread <= max_spread
-        before = len(frame)
-        if "relative_spread" in frame.columns:
-            frame = frame[frame["relative_spread"] <= max_spread].reset_index(drop=True)
-        logger.info(
-            "Liquidity filter (spread<=%.0f%%): %d -> %d rows (%.1f%% retained)",
-            max_spread * 100, before, len(frame), len(frame) / before * 100,
-        )
+        logger.info("DailyChainDataset: %d rows, %d dates (pre-filtered)", len(frame), len(self.dates))
 
         # Group by date
         self.groups: List[Tuple[np.ndarray, np.ndarray]] = []
@@ -304,8 +296,15 @@ def train_neural_ranker_from_frames(
 
     # Build datasets — full chain with liquidity filter only
     logger.info("Building datasets (full chain, spread<=50%% filter)...")
-    train_ds = DailyChainDataset(train_frame, num_features, max_spread=0.50)
-    val_ds = DailyChainDataset(val_frame, num_features, max_spread=0.50)
+    # Raw liquidity filter BEFORE normalization
+    from simulation_engine import filter_tradeable_raw, ExecutionConfig
+    exec_cfg = ExecutionConfig.from_config(config)
+    train_frame = filter_tradeable_raw(train_frame, exec_cfg)
+    val_frame = filter_tradeable_raw(val_frame, exec_cfg)
+    logger.info("After raw liquidity filter: train=%d, val=%d", len(train_frame), len(val_frame))
+
+    train_ds = DailyChainDataset(train_frame, num_features)
+    val_ds = DailyChainDataset(val_frame, num_features)
     logger.info("Train: %d days, Val: %d days", len(train_ds), len(val_ds))
 
     # batch_size=1 (one day's chain per forward pass) since chains are ~7K options

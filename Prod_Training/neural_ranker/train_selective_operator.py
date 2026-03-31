@@ -61,14 +61,17 @@ def train_meta_model(
     X = df[available].fillna(0).values
     y = df["good_trade"].fillna(0).values.astype(int)
 
-    # Purged time-series split (70/15/15 — train/calibrate/test)
-    n = len(X)
-    train_end = int(n * 0.70)
-    cal_end = int(n * 0.85)
+    # Date-level purged split — no date spans multiple partitions
+    from utils import split_train_cal_test_by_date
+    if "date" not in df.columns:
+        raise ValueError("Candidate dataset must have a 'date' column")
+    train_idx, cal_idx, test_idx = split_train_cal_test_by_date(
+        df["date"], cal_sessions=30, test_sessions=60, purge_sessions=5,
+    )
 
-    X_train, y_train = X[:train_end], y[:train_end]
-    X_cal, y_cal = X[train_end:cal_end], y[train_end:cal_end]
-    X_test, y_test = X[cal_end:], y[cal_end:]
+    X_train, y_train = X[train_idx], y[train_idx]
+    X_cal, y_cal = X[cal_idx], y[cal_idx]
+    X_test, y_test = X[test_idx], y[test_idx]
 
     logger.info("  Train: %d, Calibrate: %d, Test: %d", len(X_train), len(X_cal), len(X_test))
     logger.info("  Positive rate — train: %.1f%%, cal: %.1f%%, test: %.1f%%",
@@ -110,24 +113,23 @@ def train_meta_model(
 
     logger.info("  Test AUC: %.4f, Brier: %.4f", auc, brier)
 
-    # Find conformal acceptance threshold
-    # Target: among accepted trades, at least X% should be good
-    # Try thresholds and pick the one that maximizes accepted count
-    # while keeping precision above target
+    # Find conformal acceptance threshold on CALIBRATION data (not test)
     target_precision = 0.40 if side == "put" else 0.50
     best_threshold = 0.5
     best_accepted = 0
 
+    cal_proba = calibrator.predict(model.predict_proba(X_cal)[:, 1])
+    cal_proba = np.clip(cal_proba, 1e-6, 1 - 1e-6)
     for threshold in np.arange(0.20, 0.80, 0.02):
-        accepted = cal_test >= threshold
+        accepted = cal_proba >= threshold
         if accepted.sum() < 5:
             continue
-        precision = y_test[accepted].mean()
+        precision = y_cal[accepted].mean()
         if precision >= target_precision and accepted.sum() > best_accepted:
             best_threshold = threshold
             best_accepted = accepted.sum()
 
-    # Apply best threshold to test set
+    # Evaluate threshold on held-out test set (never used for selection)
     accepted_mask = cal_test >= best_threshold
     n_accepted = accepted_mask.sum()
     if n_accepted > 0:

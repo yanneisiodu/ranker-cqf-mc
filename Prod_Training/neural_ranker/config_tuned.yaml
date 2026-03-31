@@ -139,6 +139,42 @@ portfolio:
   min_trade_pct: 0.0025
   max_relative_spread: 0.25
 
+# Canonical execution filters (single source of truth)
+execution:
+  min_price: 0.10
+  max_relative_spread: 0.30
+  min_volume: 10
+  min_open_interest: 50
+  max_volume_participation: 0.10
+
+# Canonical risk limits (single source of truth)
+risk:
+  starting_capital: 10000.0
+  max_position_pct: 0.05
+  max_gross_pct: 0.50
+  max_positions: 10
+  max_same_direction: 7
+  max_same_expiry: 3
+  drawdown_reduce_threshold: 0.20
+  drawdown_reduce_factor: 0.50
+
+# Exit strategy
+exit_strategy:
+  take_profit_pct: 0.50
+  stop_loss_pct: 0.20
+  trailing_stop_pct: 0.15
+  max_hold_days: 5
+
+# Split / validation settings (trading sessions, not calendar days)
+splits:
+  purge_sessions: 5
+  calibration_sessions: 30
+  meta_test_sessions: 60
+
+# Simulation settings
+simulation:
+  realize_on_exit: true
+
 paths:
   output_dir: ./model_output_tuned
 
