@@ -329,11 +329,16 @@ def train_neural_ranker_from_frames(
 
     # Compile model for CUDA (1.3-1.5x speedup via kernel fusion)
     if device.type == "cuda":
-        try:
-            model = torch.compile(model)
-            logger.info("Model compiled with torch.compile (CUDA)")
-        except Exception as e:
-            logger.warning("torch.compile failed, using eager mode: %s", e)
+        import os
+        use_compile = os.getenv("TORCH_COMPILE", "true").lower() in ("true", "1", "yes")
+        if use_compile:
+            try:
+                model = torch.compile(model)
+                logger.info("Model compiled with torch.compile (CUDA)")
+            except Exception as e:
+                logger.warning("torch.compile failed, using eager mode: %s", e)
+        else:
+            logger.info("torch.compile disabled via TORCH_COMPILE env var")
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -522,11 +527,16 @@ def train_neural_ranker_from_datasets(
             logger.warning("  Unexpected keys: %s", unexpected)
 
     if device.type == "cuda":
-        try:
-            model = torch.compile(model)
-            logger.info("Model compiled with torch.compile (CUDA)")
-        except Exception as e:
-            logger.warning("torch.compile failed, using eager mode: %s", e)
+        import os
+        use_compile = os.getenv("TORCH_COMPILE", "true").lower() in ("true", "1", "yes")
+        if use_compile:
+            try:
+                model = torch.compile(model)
+                logger.info("Model compiled with torch.compile (CUDA)")
+            except Exception as e:
+                logger.warning("torch.compile failed, using eager mode: %s", e)
+        else:
+            logger.info("torch.compile disabled via TORCH_COMPILE env var")
 
     optimizer = torch.optim.AdamW(
         model.parameters(),

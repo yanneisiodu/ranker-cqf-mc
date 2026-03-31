@@ -37,7 +37,7 @@ class NeuralRankerConfig:
     feature_noise: float = 0.06
     batch_dates: int = 16
     epochs: int = 50
-    patience: int = 8
+    patience: int = 999
     seed: int = 42
 
     @classmethod

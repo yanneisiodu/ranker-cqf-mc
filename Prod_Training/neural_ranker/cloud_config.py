@@ -26,9 +26,25 @@ class CloudConfig:
     # Pretrained weights path (GCS or local)
     PRETRAINED_PATH = os.getenv("PRETRAINED_PATH", "")
 
+    # Ensemble config
+    RECENT_MONTHS = int(os.getenv("RECENT_MONTHS", "") or "18")
+    CORE_MONTHS = int(os.getenv("CORE_MONTHS", "") or "36")
+    STRESS_REPLAY_PCT = float(os.getenv("STRESS_REPLAY_PCT", "") or "0.10")
+
+    # EWC fine-tuning
+    EWC_BASE_ARTIFACT = os.getenv("EWC_BASE_ARTIFACT", "")  # GCS path to base model
+    EWC_LAMBDA = float(os.getenv("EWC_LAMBDA", "") or "1000")
+    EWC_LR = float(os.getenv("EWC_LR", "") or "5e-5")
+    EWC_EPOCHS = int(os.getenv("EWC_EPOCHS", "") or "20")
+    FISHER_SAMPLES = int(os.getenv("FISHER_SAMPLES", "") or "200")
+    FISHER_YEARS = os.getenv("FISHER_YEARS", "")  # years for Fisher computation
+
     # Target overrides
     TARGET_MODE = os.getenv("TARGET_MODE", "")  # net_long_return or net_delta_hedged_return
     HORIZON_DAYS = int(os.getenv("HORIZON_DAYS", "") or "0")  # 0 = use config default
+
+    # Torch compile (set to "false" to disable for deterministic results)
+    TORCH_COMPILE = os.getenv("TORCH_COMPILE", "true").lower() in ("true", "1", "yes")
 
     # Training overrides
     EPOCHS = int(os.getenv("EPOCHS", "50"))

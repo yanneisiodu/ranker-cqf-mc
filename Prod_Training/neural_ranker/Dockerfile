@@ -21,7 +21,9 @@ RUN pip install --no-cache-dir \
     optuna
 
 # Copy all code
-COPY neural_ranker.py hierarchical_ranker.py train_neural_ranker.py pretrain.py sweep.py optuna_neural_sweep.py \
+COPY neural_ranker.py hierarchical_ranker.py train_neural_ranker.py pretrain.py ewc_finetune.py \
+     regime_ensemble.py train_ensemble.py \
+     sweep.py optuna_neural_sweep.py \
      logger.py utils.py config_tuned.yaml cloud_config.py entrypoint.sh ./
 
 RUN chmod +x entrypoint.sh
