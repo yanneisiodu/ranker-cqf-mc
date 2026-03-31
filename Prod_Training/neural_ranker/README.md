@@ -275,7 +275,10 @@ All in git history if needed, but proven inferior:
 - ✅ Wired selective meta-operator into causal_backtest.py (bucketed exits + regime-aware put filtering)
 - ✅ Rebuilt candidate dataset with matured-only efficacy
 - ✅ Retrained meta-models (call AUC 0.64, put AUC 0.50 with honest maturity delay)
-- **IN PROGRESS:** Causal backtest with full stack (selective operator + bucketed exits)
+- ✅ Causal backtest with full stack: $10K → $3,634 (-63.7%), 135 trades (calls only), 14.1% win rate
+  - Selective operator eliminated all puts (put model AUC=0.50, can't distinguish good/bad puts with matured features)
+  - 65% of trades hit stop-loss in avg 1.9 days — stops too tight for options volatility
+  - Only 1% hit take-profit — 50% TP too high for daily-checked options
 - **NEXT:** Address Bug 5 (relevance bins / NDCG ceiling) if exit strategy tuning alone isn't enough
 - **NEXT:** Test on 2026 OOS if 2024-2025 results are promising
 
