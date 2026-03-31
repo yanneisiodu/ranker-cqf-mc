@@ -279,7 +279,16 @@ All in git history if needed, but proven inferior:
   - Selective operator eliminated all puts (put model AUC=0.50, can't distinguish good/bad puts with matured features)
   - 65% of trades hit stop-loss in avg 1.9 days — stops too tight for options volatility
   - Only 1% hit take-profit — 50% TP too high for daily-checked options
-- **NEXT:** Address Bug 5 (relevance bins / NDCG ceiling) if exit strategy tuning alone isn't enough
+- **CRITICAL NEXT FIX:** Rebuild candidate dataset with EXIT-STRATEGY-REALIZED labels, not terminal returns.
+  Currently `good_trade` = terminal 5-day return > 0. Should be: simulate TP/SL/trailing/max-hold exit
+  on each candidate using subsequent 5 days of bid prices, then label based on that realized P&L.
+  This is why the put meta-model has AUC=0.50 — it's trained on the wrong outcome.
+  Implementation: in `build_candidate_dataset.py`, for each candidate, look up bid prices on days 1-5
+  from the frame (grouped by contractid, shifted), apply the exit logic from SimulationEngine, and
+  use the resulting return as the label. The `_check_exit` logic can be reused.
+- **NEXT:** After relabeling, use `p_good` to re-rank survivors (not just gate). Currently the backtest
+  opens positions in rank-score order. Should prefer highest `score * p_good` among accepted candidates.
+- **NEXT:** Address Bug 5 (relevance bins / NDCG ceiling) if strategy alignment alone isn't enough
 - **NEXT:** Test on 2026 OOS if 2024-2025 results are promising
 
 ## Python Environment
