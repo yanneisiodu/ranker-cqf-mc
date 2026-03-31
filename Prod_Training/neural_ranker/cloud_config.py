@@ -17,31 +17,15 @@ class CloudConfig:
     OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/app/output")
     CONFIG_PATH = os.getenv("CONFIG_PATH", "./config_tuned.yaml")
 
-    # Mode: "train", "sweep", or "optuna"
+    # Mode: "train" or "optuna"
     MODE = os.getenv("MODE", "train")
 
-    # Optuna seed (different per job for parallel exploration)
+    # Optuna seed
     OPTUNA_SEED = int(os.getenv("OPTUNA_SEED", "") or "42")
 
-    # Pretrained weights path (GCS or local)
-    PRETRAINED_PATH = os.getenv("PRETRAINED_PATH", "")
-
-    # Ensemble config
-    RECENT_MONTHS = int(os.getenv("RECENT_MONTHS", "") or "18")
-    CORE_MONTHS = int(os.getenv("CORE_MONTHS", "") or "36")
-    STRESS_REPLAY_PCT = float(os.getenv("STRESS_REPLAY_PCT", "") or "0.10")
-
-    # EWC fine-tuning
-    EWC_BASE_ARTIFACT = os.getenv("EWC_BASE_ARTIFACT", "")  # GCS path to base model
-    EWC_LAMBDA = float(os.getenv("EWC_LAMBDA", "") or "1000")
-    EWC_LR = float(os.getenv("EWC_LR", "") or "5e-5")
-    EWC_EPOCHS = int(os.getenv("EWC_EPOCHS", "") or "20")
-    FISHER_SAMPLES = int(os.getenv("FISHER_SAMPLES", "") or "200")
-    FISHER_YEARS = os.getenv("FISHER_YEARS", "")  # years for Fisher computation
-
     # Target overrides
-    TARGET_MODE = os.getenv("TARGET_MODE", "")  # net_long_return or net_delta_hedged_return
-    HORIZON_DAYS = int(os.getenv("HORIZON_DAYS", "") or "0")  # 0 = use config default
+    TARGET_MODE = os.getenv("TARGET_MODE", "")
+    HORIZON_DAYS = int(os.getenv("HORIZON_DAYS", "") or "0")
 
     # Torch compile (set to "false" to disable for deterministic results)
     TORCH_COMPILE = os.getenv("TORCH_COMPILE", "true").lower() in ("true", "1", "yes")
@@ -49,7 +33,7 @@ class CloudConfig:
     # Training overrides
     EPOCHS = int(os.getenv("EPOCHS", "50"))
     PATIENCE = int(os.getenv("PATIENCE", "8"))
-    NROWS = int(os.getenv("NROWS", "0")) or None  # 0 = no limit
+    NROWS = int(os.getenv("NROWS", "0")) or None
 
     @classmethod
     def train_years_list(cls):
@@ -60,18 +44,6 @@ class CloudConfig:
         return [y.strip() for y in cls.VAL_YEARS.split(",")]
 
     @classmethod
-    def train_files(cls):
-        return [f"{cls.DATA_DIR}/year_{y}_data.csv" for y in cls.train_years_list()]
-
-    @classmethod
-    def val_files(cls):
-        return [f"{cls.DATA_DIR}/year_{y}_data.csv" for y in cls.val_years_list()]
-
-    @classmethod
-    def gcs_data_uri(cls, year):
-        return f"{cls.GCS_BUCKET}/{cls.GCS_DATA_PREFIX}/year_{year}_data.csv"
-
-    @classmethod
     def gcs_artifact_uri(cls, filename):
         return f"{cls.GCS_BUCKET}/{cls.GCS_ARTIFACT_PREFIX}/{filename}"
 
@@ -79,11 +51,11 @@ class CloudConfig:
     def print_config(cls):
         print("=== Cloud Config ===")
         print(f"  GCS Bucket:    {cls.GCS_BUCKET}")
+        print(f"  Mode:          {cls.MODE}")
         print(f"  Train years:   {cls.TRAIN_YEARS}")
         print(f"  Val years:     {cls.VAL_YEARS}")
-        print(f"  Data dir:      {cls.DATA_DIR}")
-        print(f"  Output dir:    {cls.OUTPUT_DIR}")
         print(f"  Epochs:        {cls.EPOCHS}")
         print(f"  Patience:      {cls.PATIENCE}")
+        print(f"  Torch compile: {cls.TORCH_COMPILE}")
         print(f"  Nrows:         {cls.NROWS or 'all'}")
         print()

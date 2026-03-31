@@ -21,9 +21,7 @@ RUN pip install --no-cache-dir \
     optuna
 
 # Copy all code
-COPY neural_ranker.py hierarchical_ranker.py train_neural_ranker.py pretrain.py ewc_finetune.py \
-     regime_ensemble.py train_ensemble.py \
-     sweep.py optuna_neural_sweep.py \
+COPY neural_ranker.py train_neural_ranker.py optuna_neural_sweep.py simulation_engine.py \
      logger.py utils.py config_tuned.yaml cloud_config.py entrypoint.sh ./
 
 RUN chmod +x entrypoint.sh
@@ -32,8 +30,8 @@ RUN chmod +x entrypoint.sh
 RUN python -c "import torch, pandas, numpy, sklearn, xgboost, yaml, joblib, pyarrow, optuna; \
     print(f'torch={torch.__version__} pandas={pandas.__version__} pyarrow={pyarrow.__version__}'); \
     from neural_ranker import ChainTransformer; \
-    from train_neural_ranker import train_neural_ranker_from_frames, train_neural_ranker_from_datasets, PrebuiltDataset; \
-    from pretrain import pretrain_from_groups, MaskedChainDataset, ReconstructionHead; \
+    from train_neural_ranker import train_neural_ranker_from_frames, train_neural_ranker_from_datasets; \
+    from simulation_engine import SimulationEngine, ExitStrategy; \
     from optuna_neural_sweep import run_optuna_sweep; \
     from cloud_config import CloudConfig; \
     print('All imports OK')"

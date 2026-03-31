@@ -1,0 +1,6 @@
+# Output directories (model artifacts, backtest results)
+*_output/
+*_smoke/
+*_model/
+__pycache__/
+*.pyc
