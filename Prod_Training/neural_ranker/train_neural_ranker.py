@@ -116,9 +116,7 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     accum_steps: int = 16,
-    recon_head: Optional[nn.Module] = None,
-    recon_weight: float = 0.1,
-    mask_ratio: float = 0.15,
+    listmle_top_k: int = 200,
 ) -> Dict[str, float]:
     model.train()
     if recon_head is not None:
@@ -136,7 +134,7 @@ def train_one_epoch(
         # Ranking loss
         with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
             scores = model(features, padding_mask=padding_mask)
-        rank_loss = listmle_loss(scores.float(), relevance, padding_mask=padding_mask, top_k=200)
+        rank_loss = listmle_loss(scores.float(), relevance, padding_mask=padding_mask, top_k=listmle_top_k)
 
         # Multi-task: reconstruction loss as regularizer
         if recon_head is not None:
@@ -189,6 +187,7 @@ def evaluate(
     loader: DataLoader,
     device: torch.device,
     k: int = 20,
+    listmle_top_k: int = 200,
 ) -> Dict[str, float]:
     model.eval()
     total_loss = 0.0
@@ -202,7 +201,7 @@ def evaluate(
 
         with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
             scores = model(features, padding_mask=padding_mask)
-        loss = listmle_loss(scores.float(), relevance, padding_mask=padding_mask, top_k=200)
+        loss = listmle_loss(scores.float(), relevance, padding_mask=padding_mask, top_k=listmle_top_k)
         total_loss += loss.item()
         n_batches += 1
 
@@ -262,19 +261,26 @@ def train_neural_ranker_from_frames(
         frame["type_numeric"] = (frame["type"].str.lower() == "call").astype(np.float32)
     num_features = num_features + ["type_numeric"]
 
+    # Raw liquidity filter BEFORE normalization (Bug 1 fix)
+    from simulation_engine import filter_tradeable_raw, ExecutionConfig
+    exec_cfg = ExecutionConfig.from_config(config)
+    train_frame = filter_tradeable_raw(train_frame, exec_cfg)
+    val_frame = filter_tradeable_raw(val_frame, exec_cfg)
+    logger.info("After raw liquidity filter: train=%d, val=%d", len(train_frame), len(val_frame))
+
     # Compute relevance bins from training data
     edges = compute_relevance_bins(train_frame["target_return"], n_bins=5)
     train_frame["target_relevance"] = apply_relevance_bins(train_frame["target_return"], edges).astype(np.float32)
     val_frame["target_relevance"] = apply_relevance_bins(val_frame["target_return"], edges).astype(np.float32)
 
-    # Normalize features using training stats
+    # Normalize features using training stats (AFTER filtering)
     train_mean = train_frame[num_features].mean()
     train_std = train_frame[num_features].std().replace(0, 1)
     for frame in [train_frame, val_frame]:
         frame[num_features] = (frame[num_features] - train_mean) / train_std
         frame[num_features] = frame[num_features].fillna(0.0)
 
-    # Update config with actual input dim
+    # Update config with actual input dim — wire ALL tuned params (Bug 3 fix)
     actual_config = NeuralRankerConfig(
         input_dim=len(num_features),
         embed_dim=nr_config.embed_dim,
@@ -283,25 +289,21 @@ def train_neural_ranker_from_frames(
         dropout=nr_config.dropout,
         mlp_hidden=nr_config.mlp_hidden,
         top_k_candidates=nr_config.top_k_candidates,
+        listmle_top_k=nr_config.listmle_top_k,
         learning_rate=nr_config.learning_rate,
         weight_decay=nr_config.weight_decay,
+        warmup_epochs=nr_config.warmup_epochs,
+        feature_noise=nr_config.feature_noise,
         batch_dates=nr_config.batch_dates,
         epochs=nr_config.epochs,
         patience=nr_config.patience,
         seed=nr_config.seed,
     )
-    logger.info("Config: input_dim=%d, embed=%d, heads=%d, layers=%d",
+    logger.info("Config: input_dim=%d, embed=%d, heads=%d, layers=%d, warmup=%d, noise=%.3f, top_k=%d",
                 actual_config.input_dim, actual_config.embed_dim,
-                actual_config.n_heads, actual_config.n_layers)
-
-    # Build datasets — full chain with liquidity filter only
-    logger.info("Building datasets (full chain, spread<=50%% filter)...")
-    # Raw liquidity filter BEFORE normalization
-    from simulation_engine import filter_tradeable_raw, ExecutionConfig
-    exec_cfg = ExecutionConfig.from_config(config)
-    train_frame = filter_tradeable_raw(train_frame, exec_cfg)
-    val_frame = filter_tradeable_raw(val_frame, exec_cfg)
-    logger.info("After raw liquidity filter: train=%d, val=%d", len(train_frame), len(val_frame))
+                actual_config.n_heads, actual_config.n_layers,
+                actual_config.warmup_epochs, actual_config.feature_noise,
+                actual_config.listmle_top_k)
 
     train_ds = DailyChainDataset(train_frame, num_features)
     val_ds = DailyChainDataset(val_frame, num_features)
@@ -358,9 +360,9 @@ def train_neural_ranker_from_frames(
 
     for epoch in range(1, actual_config.epochs + 1):
         t0 = time.time()
-        train_metrics = train_one_epoch(model, train_loader, optimizer, device, accum_steps=accum_steps)
+        train_metrics = train_one_epoch(model, train_loader, optimizer, device, accum_steps=accum_steps, listmle_top_k=actual_config.listmle_top_k)
         train_loss = train_metrics["rank_loss"]
-        val_metrics = evaluate(model, val_loader, device, k=20)
+        val_metrics = evaluate(model, val_loader, device, k=20, listmle_top_k=actual_config.listmle_top_k)
         scheduler.step()
         elapsed = time.time() - t0
 
@@ -400,7 +402,7 @@ def train_neural_ranker_from_frames(
         model.load_state_dict(best_state)
 
     # Final evaluation
-    final_metrics = evaluate(model, val_loader, device, k=20)
+    final_metrics = evaluate(model, val_loader, device, k=20, listmle_top_k=actual_config.listmle_top_k)
     logger.info("Final val NDCG@20 = %.4f (from epoch %d)", final_metrics["ndcg_at_k"], best_epoch)
 
     # Save artifacts
@@ -559,9 +561,9 @@ def train_neural_ranker_from_datasets(
 
     for epoch in range(1, actual_config.epochs + 1):
         t0 = time.time()
-        train_metrics = train_one_epoch(model, train_loader, optimizer, device, accum_steps=accum_steps)
+        train_metrics = train_one_epoch(model, train_loader, optimizer, device, accum_steps=accum_steps, listmle_top_k=actual_config.listmle_top_k)
         train_loss = train_metrics["rank_loss"]
-        val_metrics = evaluate(model, val_loader, device, k=20)
+        val_metrics = evaluate(model, val_loader, device, k=20, listmle_top_k=actual_config.listmle_top_k)
         scheduler.step()
         elapsed = time.time() - t0
 

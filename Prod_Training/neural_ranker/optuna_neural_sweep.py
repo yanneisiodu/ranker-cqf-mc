@@ -93,8 +93,8 @@ def load_datasets(config: Dict) -> Tuple[List, List, List[str], "pd.Series", "pd
         df["target_relevance"] = apply_relevance_bins(df["target_return"], edges).astype(np.float32)
         df[num_features] = (df[num_features] - train_mean) / train_std
         df[num_features] = df[num_features].fillna(0.0)
-        if "relative_spread" in df.columns:
-            df = df[df["relative_spread"] <= 0.50]
+        from simulation_engine import filter_tradeable_raw, ExecutionConfig as _EC
+        df = filter_tradeable_raw(df, _EC.from_config(config))
         for date in sorted(df["date"].unique()):
             day = df[df["date"] == date]
             if len(day) < 2:
@@ -115,8 +115,8 @@ def load_datasets(config: Dict) -> Tuple[List, List, List[str], "pd.Series", "pd
         df["target_relevance"] = apply_relevance_bins(df["target_return"], edges).astype(np.float32)
         df[num_features] = (df[num_features] - train_mean) / train_std
         df[num_features] = df[num_features].fillna(0.0)
-        if "relative_spread" in df.columns:
-            df = df[df["relative_spread"] <= 0.50]
+        from simulation_engine import filter_tradeable_raw, ExecutionConfig as _EC
+        df = filter_tradeable_raw(df, _EC.from_config(config))
         for date in sorted(df["date"].unique()):
             day = df[df["date"] == date]
             if len(day) < 2:

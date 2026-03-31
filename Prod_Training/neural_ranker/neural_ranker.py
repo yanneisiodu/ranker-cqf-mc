@@ -150,16 +150,16 @@ def listmle_loss(
     """Top-K truncated ListMLE: negative log-likelihood of the ground-truth permutation.
 
     Sorts items by true relevance (descending), then computes the Plackett-Luce
-    likelihood over the top-K positions only. The full score vector is still used
-    in the normalizing denominator, so gradients flow to all options.
+    likelihood over the top-K positions only. Both scores and the normalizing
+    denominator are truncated to top-K, so gradients only flow through the
+    top-K items. Items ranked below K do not receive gradients.
 
     Args:
         scores: (B, S) predicted scores
         relevance: (B, S) ground truth relevance labels
         padding_mask: (B, S) True for padded positions
-        top_k: If > 0, only compute loss over the top-K positions.
-               This focuses learning on the ranking positions that matter
-               for NDCG@20 while reducing computation by ~97%.
+        top_k: If > 0, truncate to top-K positions for loss computation.
+               Items below K receive no gradient signal.
 
     Returns:
         Scalar loss (mean over batch)
