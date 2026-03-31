@@ -86,15 +86,16 @@ def load_datasets(config: Dict) -> Tuple[List, List, List[str], "pd.Series", "pd
 
     # Build training groups
     logger.info("Building training dataset...")
+    from simulation_engine import filter_tradeable_raw, ExecutionConfig as _EC
+    exec_cfg = _EC.from_config(config)
     train_groups = []
     for year in CloudConfig.train_years_list():
         df = pd.read_parquet(f"{cache_dir}/year_{year}_prepared.parquet")
         df["type_numeric"] = (df["type"].str.lower() == "call").astype(np.float32)
         df["target_relevance"] = apply_relevance_bins(df["target_return"], edges).astype(np.float32)
+        df = filter_tradeable_raw(df, exec_cfg)  # filter on RAW before normalization
         df[num_features] = (df[num_features] - train_mean) / train_std
         df[num_features] = df[num_features].fillna(0.0)
-        from simulation_engine import filter_tradeable_raw, ExecutionConfig as _EC
-        df = filter_tradeable_raw(df, _EC.from_config(config))
         for date in sorted(df["date"].unique()):
             day = df[df["date"] == date]
             if len(day) < 2:
@@ -113,10 +114,9 @@ def load_datasets(config: Dict) -> Tuple[List, List, List[str], "pd.Series", "pd
         df = pd.read_parquet(f"{cache_dir}/year_{year}_prepared.parquet")
         df["type_numeric"] = (df["type"].str.lower() == "call").astype(np.float32)
         df["target_relevance"] = apply_relevance_bins(df["target_return"], edges).astype(np.float32)
+        df = filter_tradeable_raw(df, exec_cfg)  # filter on RAW before normalization
         df[num_features] = (df[num_features] - train_mean) / train_std
         df[num_features] = df[num_features].fillna(0.0)
-        from simulation_engine import filter_tradeable_raw, ExecutionConfig as _EC
-        df = filter_tradeable_raw(df, _EC.from_config(config))
         for date in sorted(df["date"].unique()):
             day = df[df["date"] == date]
             if len(day) < 2:

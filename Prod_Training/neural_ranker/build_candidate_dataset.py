@@ -76,12 +76,17 @@ def build_candidate_dataset(
         if col in frame.columns:
             frame[f"{col}_raw"] = frame[col].copy()
 
+    # Raw liquidity filter BEFORE normalization
+    from simulation_engine import filter_tradeable_raw, ExecutionConfig
+    exec_cfg = ExecutionConfig.from_config(load_config(config_file) if config_file else {})
+    frame = filter_tradeable_raw(frame, exec_cfg)
+    logger.info("After raw filter: %d rows", len(frame))
+
     # Normalize features for ranker scoring
     train_mean = pd.Series(artifact["train_mean"])
     train_std = pd.Series(artifact["train_std"])
     frame[feature_columns] = (frame[feature_columns] - train_mean) / train_std
     frame[feature_columns] = frame[feature_columns].fillna(0.0)
-    frame = frame[frame["relative_spread"] <= 0.50].reset_index(drop=True)
 
     # Restore raw values for candidate features
     for col in raw_save:

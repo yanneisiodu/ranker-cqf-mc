@@ -25,7 +25,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
 from logger import setup_logger
@@ -119,10 +118,7 @@ def train_one_epoch(
     listmle_top_k: int = 200,
 ) -> Dict[str, float]:
     model.train()
-    if recon_head is not None:
-        recon_head.train()
-    total_rank_loss = 0.0
-    total_recon_loss = 0.0
+    total_loss = 0.0
     n_batches = 0
     optimizer.zero_grad()
 
@@ -131,54 +127,21 @@ def train_one_epoch(
         relevance = relevance.to(device)
         padding_mask = padding_mask.to(device)
 
-        # Ranking loss
         with torch.autocast(device_type=device.type, enabled=(device.type == "cuda")):
             scores = model(features, padding_mask=padding_mask)
-        rank_loss = listmle_loss(scores.float(), relevance, padding_mask=padding_mask, top_k=listmle_top_k)
-
-        # Multi-task: reconstruction loss as regularizer
-        if recon_head is not None:
-            # Mask random options and reconstruct
-            B, S, D = features.shape
-            n_mask = max(1, int(S * mask_ratio))
-            mask_idx = torch.randint(0, S, (B, n_mask), device=device)
-            masked_input = features.clone()
-            for b in range(B):
-                masked_input[b, mask_idx[b]] = 0.0
-
-            embeddings = model.encoder(masked_input)
-            embeddings = model.transformer(embeddings, src_key_padding_mask=padding_mask)
-            predictions = recon_head(embeddings)
-
-            # MSE on masked positions only
-            recon_loss = 0.0
-            for b in range(B):
-                idx = mask_idx[b]
-                recon_loss = recon_loss + nn.functional.mse_loss(
-                    predictions[b, idx], features[b, idx]
-                )
-            recon_loss = recon_loss / B
-            loss = (rank_loss + recon_weight * recon_loss) / accum_steps
-            total_recon_loss += recon_loss.item()
-        else:
-            loss = rank_loss / accum_steps
-
+        loss = listmle_loss(scores.float(), relevance, padding_mask=padding_mask, top_k=listmle_top_k)
+        loss = loss / accum_steps
         loss.backward()
-        total_rank_loss += rank_loss.item()
+
+        total_loss += loss.item() * accum_steps
         n_batches += 1
 
         if (step + 1) % accum_steps == 0 or (step + 1) == len(loader):
-            all_params = list(model.parameters())
-            if recon_head is not None:
-                all_params += list(recon_head.parameters())
-            torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             optimizer.zero_grad()
 
-    return {
-        "rank_loss": total_rank_loss / max(n_batches, 1),
-        "recon_loss": total_recon_loss / max(n_batches, 1) if recon_head else 0.0,
-    }
+    return {"rank_loss": total_loss / max(n_batches, 1)}
 
 
 @torch.no_grad()
@@ -346,11 +309,15 @@ def train_neural_ranker_from_frames(
         lr=actual_config.learning_rate,
         weight_decay=actual_config.weight_decay,
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=actual_config.epochs,
-        eta_min=1e-6,
-    )
+
+    # Warmup + cosine schedule (same as from_datasets path)
+    warmup = actual_config.warmup_epochs
+    def lr_lambda(epoch):
+        if epoch < warmup:
+            return (epoch + 1) / max(warmup, 1)
+        progress = (epoch - warmup) / max(actual_config.epochs - warmup, 1)
+        return 0.5 * (1 + np.cos(np.pi * progress))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     # Training loop with early stopping
     best_ndcg = -float("inf")
@@ -486,16 +453,21 @@ def train_neural_ranker_from_datasets(
         dropout=nr_config.dropout,
         mlp_hidden=nr_config.mlp_hidden,
         top_k_candidates=nr_config.top_k_candidates,
+        listmle_top_k=nr_config.listmle_top_k,
         learning_rate=nr_config.learning_rate,
         weight_decay=nr_config.weight_decay,
+        warmup_epochs=nr_config.warmup_epochs,
+        feature_noise=nr_config.feature_noise,
         batch_dates=nr_config.batch_dates,
         epochs=nr_config.epochs,
         patience=nr_config.patience,
         seed=nr_config.seed,
     )
-    logger.info("Config: input_dim=%d, embed=%d, heads=%d, layers=%d",
+    logger.info("Config: input_dim=%d, embed=%d, heads=%d, layers=%d, warmup=%d, noise=%.3f, top_k=%d",
                 actual_config.input_dim, actual_config.embed_dim,
-                actual_config.n_heads, actual_config.n_layers)
+                actual_config.n_heads, actual_config.n_layers,
+                actual_config.warmup_epochs, actual_config.feature_noise,
+                actual_config.listmle_top_k)
     logger.info("Train: %d days, Val: %d days", len(train_groups), len(val_groups))
 
     train_ds = PrebuiltDataset(train_groups)

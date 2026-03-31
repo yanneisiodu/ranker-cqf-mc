@@ -246,16 +246,31 @@ All in git history if needed, but proven inferior:
 
 ## BUGS FIXED (2026-03-31)
 
-All 5 bugs from code review have been fixed:
+### Round 1 (causal fixes):
+1. ✅ Trading-session purging (not calendar days)
+2. ✅ Date-level 3-way splits with no overlap
+3. ✅ Maturity queue — efficacy uses only settled outcomes
+4. ✅ Threshold tuning on calibration, not test data
+5. ✅ Canonical execution/risk/exit_strategy config in YAML
 
-1. ✅ **Bug 1:** `train_neural_ranker_from_frames()` now filters BEFORE normalization
-2. ✅ **Bug 2:** `optuna_neural_sweep.py` now uses `filter_tradeable_raw()` instead of post-normalization spread filter
-3. ✅ **Bug 3:** `warmup_epochs`, `feature_noise`, `listmle_top_k` all wired through `actual_config` and passed to train/eval loops
-4. ✅ **Bug 4:** ListMLE docstring corrected — both scores and denominator are truncated to top-K
-5. ⚠️ **Bug 5 (NDCG ceiling):** NOT YET FIXED — 5-bin relevance with tie-blind ListMLE likely suppresses NDCG. Consider: more bins (10-20), continuous relevance, or ApproxNDCG loss.
+### Round 2 (code review bugs):
+1. ✅ `train_neural_ranker_from_frames()` now filters BEFORE normalization
+2. ✅ `optuna_neural_sweep.py` filters BEFORE normalization
+3. ✅ `warmup_epochs`, `feature_noise`, `listmle_top_k` all wired through both training paths
+4. ✅ ListMLE docstring corrected — truncated denominator documented
+5. ⚠️ **Bug 5 (NDCG ceiling):** NOT YET FIXED — 5-bin relevance creates massive ties
 
-### Next step:
-**Retrain the ranker on the corrected universe** (raw-column filtering + all config params wired). Then address Bug 5 (relevance bins) to break the NDCG ceiling.
+### Round 3 (training consistency fixes):
+1. ✅ Dead reconstruction code removed from `train_one_epoch`
+2. ✅ `from_frames` and `from_datasets` now use same scheduler (warmup + cosine LambdaLR)
+3. ✅ `from_datasets` `actual_config` now includes `listmle_top_k`, `warmup_epochs`, `feature_noise`
+4. ✅ Optuna sweep filters on raw columns before normalization
+5. ✅ `build_candidate_dataset.py` filters on raw columns before normalization
+6. ✅ Unused `torch.nn` import removed
+
+### Remaining:
+- ⚠️ **Bug 5:** 5-bin relevance + tie-blind ListMLE = NDCG ceiling at ~0.63-0.66. Consider: more bins (10-20), continuous relevance, or ApproxNDCG loss.
+- **Retrain the ranker** on the fully corrected universe before trusting any backtest numbers.
 
 ## Python Environment
 
