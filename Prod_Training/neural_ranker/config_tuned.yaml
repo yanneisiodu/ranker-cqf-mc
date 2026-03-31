@@ -184,17 +184,16 @@ platform:
     Production config with Optuna-tuned hyperparameters.
     Tuned on 2023-2024, trained on 2021-2024, holdout on 2025.
 
-# Optuna-tuned neural ranker params (best NDCG@20 = 0.663)
+# Optuna runner-up — deeper model, heavier regularization (NDCG@20 = 0.618)
 neural_ranker:
-  embed_dim: 256
+  embed_dim: 128
   n_heads: 4
-  n_layers: 2
-  dropout: 0.25
-  mlp_hidden: 512
-  learning_rate: 0.000471705203762518
-  weight_decay: 0.0022673986523780395
-  warmup_epochs: 1
-  feature_noise: 0.06
+  n_layers: 4
+  dropout: 0.35
+  mlp_hidden: 128
+  learning_rate: 0.00023203233424027797
+  weight_decay: 0.00009854887901642179
+  warmup_epochs: 3
   epochs: 50
   patience: 8
 

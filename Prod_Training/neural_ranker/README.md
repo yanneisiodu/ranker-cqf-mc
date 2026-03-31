@@ -270,7 +270,14 @@ All in git history if needed, but proven inferior:
 
 ### Remaining:
 - ⚠️ **Bug 5:** 5-bin relevance + tie-blind ListMLE = NDCG ceiling at ~0.63-0.66. Consider: more bins (10-20), continuous relevance, or ApproxNDCG loss.
-- **Retrain the ranker** on the fully corrected universe before trusting any backtest numbers.
+- ✅ **Retrained ranker** on corrected universe: NDCG@20 = 0.601 (embed=256, honest number)
+- ✅ Optuna re-sweep on corrected codebase (best 0.626 in sweep, 0.600 on full run)
+- ✅ Wired selective meta-operator into causal_backtest.py (bucketed exits + regime-aware put filtering)
+- ✅ Rebuilt candidate dataset with matured-only efficacy
+- ✅ Retrained meta-models (call AUC 0.64, put AUC 0.50 with honest maturity delay)
+- **IN PROGRESS:** Causal backtest with full stack (selective operator + bucketed exits)
+- **NEXT:** Address Bug 5 (relevance bins / NDCG ceiling) if exit strategy tuning alone isn't enough
+- **NEXT:** Test on 2026 OOS if 2024-2025 results are promising
 
 ## Python Environment
 

@@ -150,7 +150,6 @@ def neural_objective(
         "learning_rate": trial.suggest_float("learning_rate", 1e-4, 3e-3, log=True),
         "weight_decay": trial.suggest_float("weight_decay", 1e-5, 1e-2, log=True),
         "warmup_epochs": trial.suggest_int("warmup_epochs", 0, 5),
-        "feature_noise": trial.suggest_float("feature_noise", 0.0, 0.1, step=0.02),
     }
 
     config = NeuralRankerConfig(
@@ -162,20 +161,13 @@ def neural_objective(
         mlp_hidden=params["mlp_hidden"],
         learning_rate=params["learning_rate"],
         weight_decay=params["weight_decay"],
+        warmup_epochs=params["warmup_epochs"],
+        listmle_top_k=200,
         epochs=30,
         patience=6,
     )
 
-    # Augment training data with feature noise
-    if params["feature_noise"] > 0:
-        noisy_groups = []
-        for feats, rels in train_groups:
-            noise = np.random.randn(*feats.shape).astype(np.float32) * params["feature_noise"]
-            noisy_groups.append((feats + noise, rels))
-        train_ds = PrebuiltDataset(noisy_groups)
-    else:
-        train_ds = PrebuiltDataset(train_groups)
-
+    train_ds = PrebuiltDataset(train_groups)
     val_ds = PrebuiltDataset(val_groups)
 
     use_cuda = device.type == "cuda"
@@ -212,8 +204,8 @@ def neural_objective(
     accum_steps = 16
 
     for epoch in range(1, config.epochs + 1):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device, accum_steps=accum_steps)
-        val_metrics = evaluate(model, val_loader, device, k=20)
+        train_loss = train_one_epoch(model, train_loader, optimizer, device, accum_steps=accum_steps, listmle_top_k=config.listmle_top_k)
+        val_metrics = evaluate(model, val_loader, device, k=20, listmle_top_k=config.listmle_top_k)
         scheduler.step()
 
         val_ndcg = val_metrics["ndcg_at_k"]

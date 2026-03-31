@@ -140,6 +140,9 @@ def run_causal_backtest(
                 n_contracts = int(pos_dollars / (ask * 100))
                 cost = n_contracts * ask * 100
 
+                # Bucketed exit strategy based on delta/DTE/side
+                bucketed_exit = _get_bucketed_exit(row, exit_strategy) if meta_operator is not None else None
+
                 pos = OpenPosition(
                     entry_date=date,
                     contractid=row.get("contractid", ""),
@@ -151,6 +154,7 @@ def run_causal_backtest(
                     cost=cost,
                     score=row["score"],
                     rank=n_new + 1,
+                    exit_override=bucketed_exit,
                 )
 
                 if engine.open_position(pos):
@@ -184,10 +188,119 @@ def run_causal_backtest(
     return engine.get_results()
 
 
+def _get_bucketed_exit(row, base_exit: ExitStrategy) -> ExitStrategy:
+    """Route each trade to a bucket-specific exit policy based on delta/DTE/side."""
+    delta_abs = abs(row.get("delta", 0.3))
+    dte = row.get("days_to_exp", 14)
+    side = row.get("type", "")
+
+    # High-delta / near-ATM / longer-DTE: wider stops, let it run
+    if delta_abs >= 0.35 and dte >= 14:
+        return ExitStrategy(
+            take_profit_pct=0.40,
+            stop_loss_pct=0.30,
+            trailing_stop_pct=0.20,
+            max_hold_days=base_exit.max_hold_days,
+        )
+    # Low-delta / short-DTE: faster exits, lower targets
+    elif delta_abs < 0.20 or dte < 7:
+        return ExitStrategy(
+            take_profit_pct=0.25,
+            stop_loss_pct=0.15,
+            trailing_stop_pct=0.10,
+            max_hold_days=min(3, base_exit.max_hold_days),
+        )
+    # Mid-range: moderate
+    else:
+        return ExitStrategy(
+            take_profit_pct=0.35,
+            stop_loss_pct=0.25,
+            trailing_stop_pct=0.15,
+            max_hold_days=base_exit.max_hold_days,
+        )
+
+
 def _apply_meta_filter(top, meta_operator, history, day, date):
-    """Apply selective meta-model filtering if operator is provided."""
-    # TODO: integrate with SelectiveOperator using matured history only
-    return top
+    """Apply selective meta-model filtering using matured history only.
+
+    Each candidate is scored by the call or put meta-model.
+    Candidates below the acceptance threshold are rejected.
+    Put threshold is raised when recent put efficacy is poor.
+    """
+    import joblib
+    from pathlib import Path
+
+    accepted = []
+    spy_close = day["spy_d_close"].iloc[0] if "spy_d_close" in day.columns else 0
+    spy_sma = day["spy_d_sma_50"].iloc[0] if "spy_d_sma_50" in day.columns else 0
+    spy_rsi = day["spy_d_rsi"].iloc[0] if "spy_d_rsi" in day.columns else 50
+    vix = day["vix_d_close"].iloc[0] if "vix_d_close" in day.columns else 20
+    spy_mom = day["spy_momentum"].iloc[0] if "spy_momentum" in day.columns else 0
+    rvol = day["realized_vol_20d"].iloc[0] if "realized_vol_20d" in day.columns else 0
+    vrp = day["vrp_20d"].iloc[0] if "vrp_20d" in day.columns else 0
+    is_bull = float(spy_close > spy_sma) if np.isfinite(spy_close) and np.isfinite(spy_sma) else 0.5
+
+    call_hit = history.call_hit_rate(25)
+    put_hit = history.put_hit_rate(25)
+    basket_hit = history.basket_hit_rate(5)
+    consec = history.consecutive_losses()
+
+    score_top1 = top["score"].iloc[0] if len(top) > 0 else 0
+    score_spread = top["score"].iloc[0] - top["score"].iloc[-1] if len(top) > 1 else 0
+    call_ratio = (top.head(20)["type"] == "call").mean() if len(top) >= 20 else 0.5
+
+    # Regime-aware threshold adjustment
+    # Raise put threshold when bullish + puts doing poorly
+    put_threshold_adjust = 0.0
+    if is_bull > 0.5 and put_hit < 0.25:
+        put_threshold_adjust = 0.10  # harder to accept puts
+
+    for rank, (_, row) in enumerate(top.iterrows(), 1):
+        side = row.get("type", "")
+        cand_feats = {
+            "score": row["score"],
+            "score_rank_pct": rank / len(top),
+            "score_gap_to_top": score_top1 - row["score"],
+            "score_spread_top_m": score_spread,
+            "call_ratio_top20": call_ratio,
+            "delta": row.get("delta", 0),
+            "abs_delta": abs(row.get("delta", 0)),
+            "moneyness": row.get("moneyness", 1),
+            "days_to_exp": row.get("days_to_exp", 30),
+            "implied_volatility": row.get("implied_volatility", 0),
+            "relative_spread": row.get("relative_spread", 0),
+            "ask_price": row.get("ask", 0),
+            "volume": row.get("volume", 0),
+            "open_interest": row.get("open_interest", 0),
+            "gamma": row.get("gamma", 0),
+            "theta": row.get("theta", 0),
+            "vega": row.get("vega", 0),
+            "vanna": row.get("vanna", 0),
+            "charm": row.get("charm", 0),
+            "spy_rsi": spy_rsi,
+            "vix": vix,
+            "spy_momentum": spy_mom,
+            "realized_vol_20d": rvol,
+            "vrp_20d": vrp,
+            "is_bull": is_bull,
+            "call_hit_5d": call_hit,
+            "put_hit_5d": put_hit,
+            "basket_hit_5d": basket_hit,
+            "consecutive_losses": consec,
+        }
+
+        p_good = meta_operator.score_candidate(cand_feats, side)
+        threshold = meta_operator.call_threshold if side == "call" else meta_operator.put_threshold
+        if side == "put":
+            threshold += put_threshold_adjust
+
+        if p_good >= threshold:
+            accepted.append(row.name)
+
+    if len(accepted) == 0:
+        return top.head(0)  # empty dataframe, same columns
+
+    return top.loc[accepted]
 
 
 def main():
@@ -207,6 +320,7 @@ def main():
     parser.add_argument("--max-spread", type=float, default=0.30)
     parser.add_argument("--min-volume", type=int, default=10)
     parser.add_argument("--max-exposure", type=float, default=0.50)
+    parser.add_argument("--operator-dir", default=None, help="Selective operator model dir")
     args = parser.parse_args()
 
     # Load ranker
@@ -268,9 +382,43 @@ def main():
         max_gross_pct=args.max_exposure,
     )
 
+    # Load selective operator if provided
+    meta_operator = None
+    if args.operator_dir:
+        from train_selective_operator import CANDIDATE_FEATURES
+        import joblib
+        op_dir = Path(args.operator_dir)
+        call_art = joblib.load(op_dir / "meta_call.joblib")
+        put_art = joblib.load(op_dir / "meta_put.joblib")
+
+        class _MetaOp:
+            def __init__(self):
+                self.call_model = call_art["model"]
+                self.call_calibrator = call_art["calibrator"]
+                self.call_threshold = call_art["threshold"]
+                self.call_features = call_art["features"]
+                self.put_model = put_art["model"]
+                self.put_calibrator = put_art["calibrator"]
+                self.put_threshold = put_art["threshold"]
+                self.put_features = put_art["features"]
+
+            def score_candidate(self, features, side):
+                if side == "call":
+                    feat_vec = np.array([[features.get(f, 0) for f in self.call_features]])
+                    raw = self.call_model.predict_proba(feat_vec)[0, 1]
+                    return float(np.clip(self.call_calibrator.predict([raw])[0], 1e-6, 1 - 1e-6))
+                else:
+                    feat_vec = np.array([[features.get(f, 0) for f in self.put_features]])
+                    raw = self.put_model.predict_proba(feat_vec)[0, 1]
+                    return float(np.clip(self.put_calibrator.predict([raw])[0], 1e-6, 1 - 1e-6))
+
+        meta_operator = _MetaOp()
+        logger.info("Loaded selective operator from %s", args.operator_dir)
+
     # Run
     result = run_causal_backtest(ranker, frame, feature_columns, device,
-                                 exit_strategy, exec_config, risk_config)
+                                 exit_strategy, exec_config, risk_config,
+                                 meta_operator=meta_operator)
 
     # Print results
     m = result["metrics"]

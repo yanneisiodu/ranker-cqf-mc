@@ -86,6 +86,7 @@ class OpenPosition:
     peak_price: float = 0.0           # for trailing stop
     hold_days: int = 0
     exit_reason: str = ""
+    exit_override: Optional["ExitStrategy"] = None  # per-position bucketed exit
     meta: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -281,24 +282,27 @@ class SimulationEngine:
         if current_price <= 0:
             return "worthless"
 
+        # Use per-position exit if set, otherwise global
+        es = pos.exit_override if pos.exit_override is not None else self.exit_strategy
+
         ret = (current_price - pos.entry_price) / pos.entry_price
 
         # Take profit
-        if ret >= self.exit_strategy.take_profit_pct:
+        if ret >= es.take_profit_pct:
             return "take_profit"
 
         # Stop loss
-        if ret <= -self.exit_strategy.stop_loss_pct:
+        if ret <= -es.stop_loss_pct:
             return "stop_loss"
 
         # Trailing stop
         if pos.peak_price > pos.entry_price:
             drop_from_peak = (pos.peak_price - current_price) / pos.peak_price
-            if drop_from_peak >= self.exit_strategy.trailing_stop_pct:
+            if drop_from_peak >= es.trailing_stop_pct:
                 return "trailing_stop"
 
         # Max hold
-        if pos.hold_days >= self.exit_strategy.max_hold_days:
+        if pos.hold_days >= es.max_hold_days:
             return "max_hold"
 
         return ""
