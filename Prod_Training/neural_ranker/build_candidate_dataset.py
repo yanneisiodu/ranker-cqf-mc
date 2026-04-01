@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -36,6 +36,52 @@ MIN_OI = 50
 TOP_M = 40
 RETURN_HURDLE = 0.0  # net positive return after spread
 CATASTROPHE_THRESHOLD = -0.80  # lose 80%+ of position
+
+# Exit strategy params for labeling (must match causal_backtest.py bucketed exits)
+LABEL_MAX_HOLD = 5
+LABEL_TP_HIGH_DELTA = 0.40   # high-delta/long-DTE
+LABEL_SL_HIGH_DELTA = 0.30
+LABEL_TP_LOW_DELTA = 0.25    # low-delta/short-DTE
+LABEL_SL_LOW_DELTA = 0.15
+LABEL_TP_MID = 0.35          # mid-range
+LABEL_SL_MID = 0.25
+
+
+def _simulate_exit(entry_price: float, future_bids: List[float],
+                    delta_abs: float, dte: float) -> Tuple[float, str]:
+    """Simulate bucketed TP/SL/max-hold exit and return (realized_return, exit_reason).
+
+    Uses the same bucketing logic as causal_backtest._get_bucketed_exit().
+    """
+    if entry_price <= 0:
+        return np.nan, "invalid"
+
+    # Select TP/SL by bucket
+    if delta_abs >= 0.35 and dte >= 14:
+        tp, sl = LABEL_TP_HIGH_DELTA, LABEL_SL_HIGH_DELTA
+    elif delta_abs < 0.20 or dte < 7:
+        tp, sl = LABEL_TP_LOW_DELTA, LABEL_SL_LOW_DELTA
+    else:
+        tp, sl = LABEL_TP_MID, LABEL_SL_MID
+
+    peak = entry_price
+    for bid in future_bids:
+        if bid <= 0 or not np.isfinite(bid):
+            continue
+        ret = (bid - entry_price) / entry_price
+        if ret >= tp:
+            return ret, "take_profit"
+        if ret <= -sl:
+            return ret, "stop_loss"
+        if bid > peak:
+            peak = bid
+
+    # Max hold — use last available bid
+    valid_bids = [b for b in future_bids if b > 0 and np.isfinite(b)]
+    if valid_bids:
+        final_ret = (valid_bids[-1] - entry_price) / entry_price
+        return final_ret, "max_hold"
+    return np.nan, "no_data"
 
 
 def build_candidate_dataset(
@@ -93,6 +139,15 @@ def build_candidate_dataset(
         raw = f"{col}_raw"
         if raw in frame.columns:
             frame[col] = frame[raw]
+
+    # Precompute future bid prices for exit-strategy simulation
+    logger.info("Precomputing future bid prices for exit-strategy labels...")
+    frame = frame.sort_values(["contractid", "date"]).reset_index(drop=True)
+    grouped = frame.groupby("contractid", sort=False)
+    for d in range(1, LABEL_MAX_HOLD + 1):
+        frame[f"bid_d{d}"] = grouped["bid"].shift(-d)
+    frame = frame.sort_values(["date", "contractid"]).reset_index(drop=True)
+    logger.info("Future bids computed (d1-d%d)", LABEL_MAX_HOLD)
 
     # Rolling efficacy tracking with maturity queue
     # Outcomes are queued by exit_date and only mature when current_date >= exit_date
@@ -172,6 +227,13 @@ def build_candidate_dataset(
         for rank, (_, row) in enumerate(top.iterrows(), 1):
             ret = row.get("target_return", np.nan)
 
+            # Simulate exit strategy to get realized return
+            entry_price = row.get("ask", 0)
+            delta_abs = abs(row.get("delta", 0.3))
+            dte = row.get("days_to_exp", 14)
+            future_bids = [row.get(f"bid_d{d}", np.nan) for d in range(1, LABEL_MAX_HOLD + 1)]
+            realized_ret, exit_reason = _simulate_exit(entry_price, future_bids, delta_abs, dte)
+
             candidate = {
                 "date": str(date),
                 "contractid": row.get("contractid", ""),
@@ -187,12 +249,12 @@ def build_candidate_dataset(
 
                 # Option structure features
                 "delta": row.get("delta", 0),
-                "abs_delta": abs(row.get("delta", 0)),
+                "abs_delta": delta_abs,
                 "moneyness": row.get("moneyness", 1),
-                "days_to_exp": row.get("days_to_exp", 30),
+                "days_to_exp": dte,
                 "implied_volatility": row.get("implied_volatility", 0),
                 "relative_spread": row.get("relative_spread", 0),
-                "ask_price": row.get("ask", 0),
+                "ask_price": entry_price,
                 "volume": row.get("volume", 0),
                 "open_interest": row.get("open_interest", 0),
                 "gamma": row.get("gamma", 0),
@@ -215,10 +277,12 @@ def build_candidate_dataset(
                 "basket_hit_5d": basket_hit_5d,
                 "consecutive_losses": consec_losses,
 
-                # Labels
+                # Labels — exit-strategy-realized (not terminal return)
                 "target_return": ret,
-                "good_trade": int(ret > RETURN_HURDLE) if np.isfinite(ret) else np.nan,
-                "catastrophe": int(ret < CATASTROPHE_THRESHOLD) if np.isfinite(ret) else np.nan,
+                "realized_return": realized_ret,
+                "exit_reason": exit_reason,
+                "good_trade": int(realized_ret > RETURN_HURDLE) if np.isfinite(realized_ret) else np.nan,
+                "catastrophe": int(realized_ret < CATASTROPHE_THRESHOLD) if np.isfinite(realized_ret) else np.nan,
             }
             all_candidates.append(candidate)
 
@@ -254,6 +318,10 @@ def build_candidate_dataset(
     logger.info("Saved candidate dataset: %d total (%d calls, %d puts)", len(df), len(calls), len(puts))
     logger.info("  Good trade rate (calls): %.1f%%", calls["good_trade"].mean() * 100 if len(calls) > 0 else 0)
     logger.info("  Good trade rate (puts):  %.1f%%", puts["good_trade"].mean() * 100 if len(puts) > 0 else 0)
+    if "exit_reason" in df.columns:
+        logger.info("  Exit reasons:")
+        for reason in df["exit_reason"].value_counts().items():
+            logger.info("    %s: %d (%.0f%%)", reason[0], reason[1], reason[1] / len(df) * 100)
     logger.info("  Catastrophe rate (calls): %.1f%%", calls["catastrophe"].mean() * 100 if len(calls) > 0 else 0)
     logger.info("  Catastrophe rate (puts):  %.1f%%", puts["catastrophe"].mean() * 100 if len(puts) > 0 else 0)
 
