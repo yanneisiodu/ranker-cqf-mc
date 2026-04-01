@@ -279,17 +279,36 @@ All in git history if needed, but proven inferior:
   - Selective operator eliminated all puts (put model AUC=0.50, can't distinguish good/bad puts with matured features)
   - 65% of trades hit stop-loss in avg 1.9 days — stops too tight for options volatility
   - Only 1% hit take-profit — 50% TP too high for daily-checked options
-- **CRITICAL NEXT FIX:** Rebuild candidate dataset with EXIT-STRATEGY-REALIZED labels, not terminal returns.
-  Currently `good_trade` = terminal 5-day return > 0. Should be: simulate TP/SL/trailing/max-hold exit
-  on each candidate using subsequent 5 days of bid prices, then label based on that realized P&L.
-  This is why the put meta-model has AUC=0.50 — it's trained on the wrong outcome.
-  Implementation: in `build_candidate_dataset.py`, for each candidate, look up bid prices on days 1-5
-  from the frame (grouped by contractid, shifted), apply the exit logic from SimulationEngine, and
-  use the resulting return as the label. The `_check_exit` logic can be reused.
-- **NEXT:** After relabeling, use `p_good` to re-rank survivors (not just gate). Currently the backtest
-  opens positions in rank-score order. Should prefer highest `score * p_good` among accepted candidates.
-- **NEXT:** Address Bug 5 (relevance bins / NDCG ceiling) if strategy alignment alone isn't enough
-- **NEXT:** Test on 2026 OOS if 2024-2025 results are promising
+- ✅ Rebuilt candidate dataset with EXIT-STRATEGY-REALIZED labels (not terminal returns).
+  `good_trade` now = realized return > 0 under bucketed TP/SL/max-hold simulation.
+  Call good_trade rate: 55.6% (up from 44.6%), put: 21.9%.
+  Result: identical backtest ($3,634) — labels improved but meta-model still can't
+  distinguish good from bad with matured-only efficacy features + 5-day delay.
+### Honest assessment of where we stand (2026-04-01):
+The ranker achieves NDCG@20 = 0.601 and the full causal stack produces -63.7% return.
+The system is NOT profitable yet. Three paths remain:
+
+1. **Widen stops dramatically** — options are too volatile for 15-25% daily stops.
+   Try no stop-loss at all (pure 5-day hold was -85% vs -91% with stops).
+   Or try very wide stops (50%+) that only trigger on true disasters.
+
+2. **Better meta-model features** — the 5-day maturity delay kills efficacy signal.
+   With hourly data (another agent is building this), intraday features could
+   give the meta-model real-time signal without waiting for 5-day settlement.
+
+3. **Bug 5: Relevance bins** — increase from 5 to 15-20 bins, or use continuous
+   relevance, or switch to ApproxNDCG loss. This could push NDCG from 0.60 to 0.70+.
+
+4. **Train on exit-strategy-realized returns** (the ranker itself, not just meta-models).
+   Currently ranker trains on terminal 5-day return. If trained on bucketed exit returns,
+   it would learn to pick options that hit TP before hitting SL.
+
+5. **Use `p_good * score` to rank survivors** instead of just gating.
+
+### Key model artifacts:
+- `/tmp/neural_ranker_corrected.pt` — best ranker (NDCG 0.601, embed=256, corrected codebase)
+- GCS `base_model_0634.pt` — old best (0.634, pre-correction, NOT on corrected universe)
+- GCS `neural_ranker_artifact.pt` — latest (0.509, runner-up params, NOT the best)
 
 ## Python Environment
 
